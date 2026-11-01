@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Smart Parking</string>
+    <string name="title_dashboard">Dashboard</string>
+    <string name="title_vehicle_entry">Vehicle Entry</string>
+    <string name="title_vehicle_exit">Vehicle Exit</string>
+    <string name="title_search">Find Vehicle</string>
+    <string name="title_reports">Reports</string>
+    <string name="title_settings">Settings</string>
+</resources>
