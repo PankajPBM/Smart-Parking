@@ -34,8 +34,15 @@ class PbLicenseService(private val context: Context) {
         private const val PREF_IS_ACTIVATED = "is_license_activated"
         private const val PREF_LICENSE_KEY = "activated_license_key"
         private const val PREF_CUSTOMER_NAME = "activated_customer_name"
+        private const val PREF_CONTACT_EMAIL = "activated_contact_email"
+        private const val PREF_CONTACT_PHONE = "activated_contact_phone"
+        private const val PREF_BOUND_HARDWARE = "activated_bound_hardware"
+        private const val PREF_MAX_DEVICES = "activated_max_devices"
         private const val PREF_LICENSE_TYPE = "activated_license_type"
         private const val PREF_EXPIRY_UTC = "activated_expiry_utc"
+        private const val PREF_STATUS = "activated_status"
+        private const val PREF_NOTES = "activated_notes"
+        private const val PREF_PRODUCT_NAME = "activated_product_name"
         private const val PREF_LICENSE_ENVELOPE = "activated_license_envelope"
         private const val PREF_LAST_HEARTBEAT = "last_heartbeat_time"
 
@@ -55,20 +62,33 @@ class PbLicenseService(private val context: Context) {
         data class ProActive(
             val licenseKey: String,
             val customerName: String,
-            val licenseType: String,
-            val expiryDate: String
+            val contactEmail: String = "",
+            val contactPhone: String = "",
+            val boundHardware: String = "",
+            val maxDevices: Int = 1,
+            val licenseType: String = "PERPETUAL",
+            val expiryDate: String = "Lifetime",
+            val daysRemaining: Int? = null,
+            val status: String = "Active",
+            val notes: String = "",
+            val productName: String = PRODUCT_NAME
         ) : LicenseState()
 
         data class TrialActive(
             val daysRemaining: Int,
             val expiryDate: String,
             val startDate: String,
-            val totalDays: Int = 365
+            val boundHardware: String = "",
+            val totalDays: Int = 365,
+            val productName: String = PRODUCT_NAME
         ) : LicenseState()
 
         data class Expired(
             val reason: String,
-            val expiryDate: String
+            val expiryDate: String,
+            val customerName: String = "",
+            val boundHardware: String = "",
+            val productName: String = PRODUCT_NAME
         ) : LicenseState()
     }
 
@@ -77,7 +97,9 @@ class PbLicenseService(private val context: Context) {
         val message: String,
         val customerName: String? = null,
         val licenseType: String? = null,
-        val expiryDate: String? = null
+        val expiryDate: String? = null,
+        val contactEmail: String? = null,
+        val maxDevices: Int? = null
     )
 
     /**
@@ -89,37 +111,63 @@ class PbLicenseService(private val context: Context) {
         if (isActivated) {
             val key = prefs.getString(PREF_LICENSE_KEY, "") ?: ""
             val customer = prefs.getString(PREF_CUSTOMER_NAME, "Licensed Customer") ?: "Licensed Customer"
+            val email = prefs.getString(PREF_CONTACT_EMAIL, "") ?: ""
+            val phone = prefs.getString(PREF_CONTACT_PHONE, "") ?: ""
+            val boundHw = prefs.getString(PREF_BOUND_HARDWARE, "") ?: MachineFingerprint.getHardwareId(context)
+            val maxDev = prefs.getInt(PREF_MAX_DEVICES, 1)
             val type = prefs.getString(PREF_LICENSE_TYPE, "PERPETUAL") ?: "PERPETUAL"
+            val status = prefs.getString(PREF_STATUS, "Active") ?: "Active"
+            val notes = prefs.getString(PREF_NOTES, "") ?: ""
+            val prodName = prefs.getString(PREF_PRODUCT_NAME, PRODUCT_NAME) ?: PRODUCT_NAME
             val expiryUtc = prefs.getString(PREF_EXPIRY_UTC, null)
 
+            var daysRemaining: Int? = null
             // Check if pro license has expired
             if (!expiryUtc.isNullOrBlank()) {
                 val expiryEpoch = parseUtcDate(expiryUtc)
-                if (expiryEpoch != null && System.currentTimeMillis() > expiryEpoch) {
-                    val dateFormat = SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
-                    return LicenseState.Expired(
-                        reason = "Pro subscription period has ended",
-                        expiryDate = dateFormat.format(Date(expiryEpoch))
-                    )
+                if (expiryEpoch != null) {
+                    val diff = expiryEpoch - System.currentTimeMillis()
+                    daysRemaining = (diff / (1000L * 60 * 60 * 24)).toInt()
+                    if (diff <= 0) {
+                        val dateFormat = SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
+                        return LicenseState.Expired(
+                            reason = "Pro subscription period has ended",
+                            expiryDate = dateFormat.format(Date(expiryEpoch)),
+                            customerName = customer,
+                            boundHardware = boundHw,
+                            productName = prodName
+                        )
+                    }
                 }
             }
 
             return LicenseState.ProActive(
                 licenseKey = key,
                 customerName = customer,
+                contactEmail = email,
+                contactPhone = phone,
+                boundHardware = boundHw,
+                maxDevices = maxDev,
                 licenseType = type,
-                expiryDate = expiryUtc?.let { formatIsoToReadable(it) } ?: "Lifetime / Perpetual"
+                expiryDate = expiryUtc?.let { formatIsoToReadable(it) } ?: "Lifetime / Perpetual",
+                daysRemaining = daysRemaining,
+                status = status,
+                notes = notes,
+                productName = prodName
             )
         }
 
         // Check fallback to default 1-Year Trial
         val trialStatus = trialManager.getTrialStatus()
+        val machineHw = MachineFingerprint.getHardwareId(context)
         return if (trialStatus.isTrialActive) {
             LicenseState.TrialActive(
                 daysRemaining = trialStatus.daysRemaining,
                 expiryDate = trialStatus.expiryDateFormatted,
                 startDate = trialStatus.startDateFormatted,
-                totalDays = trialStatus.totalDays
+                boundHardware = machineHw,
+                totalDays = trialStatus.totalDays,
+                productName = PRODUCT_NAME
             )
         } else {
             val reason = if (trialStatus.isClockTampered) {
@@ -129,7 +177,10 @@ class PbLicenseService(private val context: Context) {
             }
             LicenseState.Expired(
                 reason = reason,
-                expiryDate = trialStatus.expiryDateFormatted
+                expiryDate = trialStatus.expiryDateFormatted,
+                customerName = "Trial User",
+                boundHardware = machineHw,
+                productName = PRODUCT_NAME
             )
         }
     }
@@ -179,16 +230,30 @@ class PbLicenseService(private val context: Context) {
 
             if (success) {
                 val customerName = json.optString("customerName", "Valued Customer")
+                val contactEmail = json.optString("contactEmail", "")
+                val contactPhone = json.optString("contactPhone", "")
+                val boundHardware = json.optString("boundHardware", machineHash)
+                val maxDevices = json.optInt("maxDevices", 1)
                 val licenseType = json.optString("licenseType", "PERPETUAL")
-                val expiryUtc = json.optString("expiryUtc", null).takeIf { it != "null" && it.isNotBlank() }
+                val status = json.optString("status", "Active")
+                val notes = json.optString("notes", "")
+                val productName = json.optString("productName", PRODUCT_NAME)
+                val expiryUtc = json.optString("expiryUtc", "").takeIf { it != "null" && it.isNotBlank() }
                 val licenseEnvelope = json.optString("licenseFileContent", "")
 
                 prefs.edit()
                     .putBoolean(PREF_IS_ACTIVATED, true)
                     .putString(PREF_LICENSE_KEY, cleanKey)
                     .putString(PREF_CUSTOMER_NAME, customerName)
+                    .putString(PREF_CONTACT_EMAIL, contactEmail)
+                    .putString(PREF_CONTACT_PHONE, contactPhone)
+                    .putString(PREF_BOUND_HARDWARE, boundHardware)
+                    .putInt(PREF_MAX_DEVICES, maxDevices)
                     .putString(PREF_LICENSE_TYPE, licenseType)
                     .putString(PREF_EXPIRY_UTC, expiryUtc)
+                    .putString(PREF_STATUS, status)
+                    .putString(PREF_NOTES, notes)
+                    .putString(PREF_PRODUCT_NAME, productName)
                     .putString(PREF_LICENSE_ENVELOPE, licenseEnvelope)
                     .putLong(PREF_LAST_HEARTBEAT, System.currentTimeMillis())
                     .apply()
@@ -199,7 +264,9 @@ class PbLicenseService(private val context: Context) {
                     message = message,
                     customerName = customerName,
                     licenseType = licenseType,
-                    expiryDate = readableExpiry
+                    expiryDate = readableExpiry,
+                    contactEmail = contactEmail,
+                    maxDevices = maxDevices
                 )
             } else {
                 ActivationResult(false, message)
@@ -217,6 +284,7 @@ class PbLicenseService(private val context: Context) {
      */
     suspend fun sendHeartbeat(): Boolean = withContext(Dispatchers.IO) {
         val isActivated = prefs.getBoolean(PREF_IS_ACTIVATED, false)
+        if (!isActivated) return@withContext false
         val key = prefs.getString(PREF_LICENSE_KEY, null) ?: return@withContext false
         val machineHash = MachineFingerprint.getHardwareId(context)
 
@@ -244,10 +312,25 @@ class PbLicenseService(private val context: Context) {
                 if (!valid) {
                     val reason = json.optString("reason", "REVOKED")
                     if (reason == "SUSPENDED" || reason == "MACHINE_MISMATCH") {
-                        prefs.edit().putBoolean(PREF_IS_ACTIVATED, false).apply()
+                        prefs.edit()
+                            .putBoolean(PREF_IS_ACTIVATED, false)
+                            .putString(PREF_STATUS, if (reason == "SUSPENDED") "Suspended" else "Machine Mismatch")
+                            .apply()
                     }
                 } else {
-                    prefs.edit().putLong(PREF_LAST_HEARTBEAT, System.currentTimeMillis()).apply()
+                    val editor = prefs.edit()
+                        .putLong(PREF_LAST_HEARTBEAT, System.currentTimeMillis())
+                    if (json.has("customerName")) editor.putString(PREF_CUSTOMER_NAME, json.optString("customerName"))
+                    if (json.has("contactEmail")) editor.putString(PREF_CONTACT_EMAIL, json.optString("contactEmail"))
+                    if (json.has("contactPhone")) editor.putString(PREF_CONTACT_PHONE, json.optString("contactPhone"))
+                    if (json.has("boundHardware")) editor.putString(PREF_BOUND_HARDWARE, json.optString("boundHardware"))
+                    if (json.has("maxDevices")) editor.putInt(PREF_MAX_DEVICES, json.optInt("maxDevices"))
+                    if (json.has("licenseType")) editor.putString(PREF_LICENSE_TYPE, json.optString("licenseType"))
+                    if (json.has("expiryUtc")) editor.putString(PREF_EXPIRY_UTC, json.optString("expiryUtc"))
+                    if (json.has("status")) editor.putString(PREF_STATUS, json.optString("status"))
+                    if (json.has("notes")) editor.putString(PREF_NOTES, json.optString("notes"))
+                    if (json.has("productName")) editor.putString(PREF_PRODUCT_NAME, json.optString("productName"))
+                    editor.apply()
                 }
                 valid
             } else {

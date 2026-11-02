@@ -52,6 +52,14 @@ fun LicenseScreen(
     val fullHardwareId = remember { MachineFingerprint.getHardwareId(context) }
 
     fun refreshState() {
+        coroutineScope.launch {
+            licenseService.sendHeartbeat()
+            licenseState = licenseService.getLicenseState()
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        licenseService.sendHeartbeat()
         licenseState = licenseService.getLicenseState()
     }
 
@@ -87,7 +95,23 @@ fun LicenseScreen(
             // 1. Current License Status Card
             LicenseStatusCard(licenseState = licenseState)
 
-            // 2. Machine Hardware Fingerprint (Hardware Locked ID)
+            // 2. PB License Registry Record Card (Exact details registered in PB License Center)
+            PbLicenseRegistryCard(
+                licenseState = licenseState,
+                fullHardwareId = fullHardwareId,
+                onCopy = { label, text ->
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    val clip = ClipData.newPlainText(label, text)
+                    clipboard.setPrimaryClip(clip)
+                    Toast.makeText(context, "$label copied to clipboard", Toast.LENGTH_SHORT).show()
+                },
+                onOpenPortal = {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://parking.devika77.com.np"))
+                    context.startActivity(intent)
+                }
+            )
+
+            // 3. Machine Hardware Fingerprint (Hardware Locked ID)
             MachineIdCard(
                 formattedCode = formattedMachineCode,
                 fullHash = fullHardwareId,
@@ -436,6 +460,266 @@ fun MachineIdCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+    }
+}
+
+@Composable
+fun PbLicenseRegistryCard(
+    licenseState: PbLicenseService.LicenseState,
+    fullHardwareId: String,
+    onCopy: (String, String) -> Unit,
+    onOpenPortal: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // Header with Registry Title and Status Pill
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.VerifiedUser,
+                        contentDescription = null,
+                        tint = when (licenseState) {
+                            is PbLicenseService.LicenseState.ProActive -> SuccessGreen
+                            is PbLicenseService.LicenseState.TrialActive -> PrimaryBlue
+                            is PbLicenseService.LicenseState.Expired -> ErrorRed
+                        },
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Text(
+                        text = "PB License Registry Record",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = when (licenseState) {
+                        is PbLicenseService.LicenseState.ProActive -> SuccessGreen
+                        is PbLicenseService.LicenseState.TrialActive -> PrimaryBlue
+                        is PbLicenseService.LicenseState.Expired -> ErrorRed
+                    }
+                ) {
+                    Text(
+                        text = when (licenseState) {
+                            is PbLicenseService.LicenseState.ProActive -> licenseState.status.uppercase()
+                            is PbLicenseService.LicenseState.TrialActive -> "ACTIVE"
+                            is PbLicenseService.LicenseState.Expired -> "EXPIRED"
+                        },
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            Text(
+                text = "Official deployment & licensing metadata registered in PB Central License Authority.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+            // Details Table matching PB License Center columns
+            val prodName = when (licenseState) {
+                is PbLicenseService.LicenseState.ProActive -> licenseState.productName
+                is PbLicenseService.LicenseState.TrialActive -> licenseState.productName
+                is PbLicenseService.LicenseState.Expired -> licenseState.productName
+            }
+            RegistryDetailRow(label = "PRODUCT", value = prodName, badgeColor = PrimaryBlue)
+
+            when (licenseState) {
+                is PbLicenseService.LicenseState.ProActive -> {
+                    RegistryDetailRowWithCopy(
+                        label = "LICENSE KEY",
+                        value = licenseState.licenseKey,
+                        onCopy = { onCopy("License Key", licenseState.licenseKey) }
+                    )
+                    RegistryDetailRow(label = "CUSTOMER NAME", value = licenseState.customerName)
+                    if (licenseState.contactEmail.isNotBlank()) {
+                        RegistryDetailRow(label = "CONTACT EMAIL", value = licenseState.contactEmail)
+                    }
+                    if (licenseState.contactPhone.isNotBlank()) {
+                        RegistryDetailRow(label = "CONTACT PHONE", value = licenseState.contactPhone)
+                    }
+                    RegistryDetailRowWithCopy(
+                        label = "BOUND HARDWARE",
+                        value = licenseState.boundHardware.ifBlank { fullHardwareId },
+                        onCopy = { onCopy("Hardware ID", licenseState.boundHardware.ifBlank { fullHardwareId }) }
+                    )
+                    RegistryDetailRow(
+                        label = "MODULES & QUOTAS",
+                        value = "Parking POS (${licenseState.maxDevices} Terminals) • Thermal Slip • Cloud Sync"
+                    )
+                    val expiryDisplay = if (licenseState.daysRemaining != null && licenseState.daysRemaining > 0) {
+                        "${licenseState.expiryDate} (${licenseState.daysRemaining}d left)"
+                    } else {
+                        licenseState.expiryDate
+                    }
+                    RegistryDetailRow(label = "EXPIRY DATE", value = expiryDisplay, isHighlight = true)
+                    if (licenseState.notes.isNotBlank()) {
+                        RegistryDetailRow(label = "ADMIN NOTES", value = licenseState.notes)
+                    }
+                }
+
+                is PbLicenseService.LicenseState.TrialActive -> {
+                    RegistryDetailRowWithCopy(
+                        label = "LICENSE KEY",
+                        value = "TRIAL-1YEAR-AUTO",
+                        onCopy = { onCopy("License Key", "TRIAL-1YEAR-AUTO") }
+                    )
+                    RegistryDetailRow(label = "CUSTOMER NAME", value = "Local POS Operator")
+                    RegistryDetailRowWithCopy(
+                        label = "BOUND HARDWARE",
+                        value = licenseState.boundHardware.ifBlank { fullHardwareId },
+                        onCopy = { onCopy("Hardware ID", fullHardwareId) }
+                    )
+                    RegistryDetailRow(
+                        label = "MODULES & QUOTAS",
+                        value = "Parking POS (1 Terminal) • Thermal Slip • Local DB"
+                    )
+                    RegistryDetailRow(
+                        label = "EXPIRY DATE",
+                        value = "${licenseState.expiryDate} (${licenseState.daysRemaining}d left)",
+                        isHighlight = true
+                    )
+                    RegistryDetailRow(label = "TRIAL STARTED", value = licenseState.startDate)
+                }
+
+                is PbLicenseService.LicenseState.Expired -> {
+                    RegistryDetailRow(label = "STATUS REASON", value = licenseState.reason)
+                    RegistryDetailRow(label = "EXPIRED ON", value = licenseState.expiryDate)
+                    RegistryDetailRowWithCopy(
+                        label = "BOUND HARDWARE",
+                        value = fullHardwareId,
+                        onCopy = { onCopy("Hardware ID", fullHardwareId) }
+                    )
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+            // Web Portal Access Button
+            Button(
+                onClick = onOpenPortal,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
+            ) {
+                Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Open Client Portal (parking.devika77.com.np)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            }
+        }
+    }
+}
+
+@Composable
+fun RegistryDetailRow(
+    label: String,
+    value: String,
+    badgeColor: Color? = null,
+    isHighlight: Boolean = false
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (badgeColor != null) {
+            Surface(
+                shape = RoundedCornerShape(6.dp),
+                color = badgeColor.copy(alpha = 0.12f)
+            ) {
+                Text(
+                    text = value,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = badgeColor
+                )
+            }
+        } else {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (isHighlight) FontWeight.Bold else FontWeight.Normal,
+                color = if (isHighlight) SuccessGreen else MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
+}
+
+@Composable
+fun RegistryDetailRowWithCopy(
+    label: String,
+    value: String,
+    onCopy: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = if (value.length > 20) value.take(18) + "..." else value,
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            IconButton(
+                onClick = onCopy,
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ContentCopy,
+                    contentDescription = "Copy",
+                    tint = PrimaryBlue,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
         }
     }
 }
