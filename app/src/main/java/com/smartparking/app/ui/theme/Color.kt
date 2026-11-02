@@ -18,6 +18,7 @@ val SurfaceVariantDark = Color(0xFF334155)
 // Text Colors
 val TextPrimaryLight = Color(0xFF0F172A)
 val TextPrimaryDark = Color(0xFFF8FAFC)
+val TextSecondary = Color(0xFF64748B)
 val TextSecondaryLight = Color(0xFF64748B)
 val TextSecondaryDark = Color(0xFF94A3B8)
 val TextTertiaryLight = Color(0xFF94A3B8)
@@ -26,11 +27,13 @@ val TextTertiaryDark = Color(0xFF64748B)
 // Status Colors
 val SuccessGreen = Color(0xFF16A34A)
 val SuccessGreenLight = Color(0xFF22C55E)
+val AmberWarning = Color(0xFFF59E0B)
 val WarningOrange = Color(0xFFF59E0B)
 val WarningOrangeLight = Color(0xFFFBBF24)
 val ErrorRed = Color(0xFFDC2626)
 val ErrorRedLight = Color(0xFFEF4444)
 val InfoBlue = Color(0xFF3B82F6)
+val DarkSlate = Color(0xFF334155)
 
 // Border & Divider
 val BorderLight = Color(0xFFE2E8F0)

@@ -158,7 +158,7 @@ class SunmiAidlPrinterAdapter(
     ): PrintResult = withContext(Dispatchers.IO) {
         val service = woyouService ?: return@withContext PrintResult.PrinterUnavailable
 
-        return@withContext suspendCancellableCoroutine { continuation ->
+        return@withContext suspendCancellableCoroutine<PrintResult> { continuation ->
             try {
                 val is80mm = capabilities.paperWidth == PaperWidth.WIDTH_80MM
                 val divider = if (is80mm) "================================================" else "--------------------------------"
@@ -210,29 +210,11 @@ class SunmiAidlPrinterAdapter(
                     service.cutPaper(null)
                 }
 
-                // Execute print buffer with callback
-                service.exitPrinterBufferWithCallback(true, object : ICallback.Stub() {
-                    override fun onRunResult(isSuccess: Boolean) {
-                        if (isSuccess && continuation.isActive) {
-                            continuation.resume(PrintResult.Success)
-                        }
-                    }
-
-                    override fun onReturnString(result: String?) {}
-
-                    override fun onRaiseException(code: Int, msg: String?) {
-                        if (continuation.isActive) {
-                            continuation.resume(PrintResult.Error(code, msg ?: "Printer error"))
-                        }
-                    }
-
-                    override fun onPrintResult(code: Int, msg: String?) {
-                        if (continuation.isActive) {
-                            if (code == 0) continuation.resume(PrintResult.Success)
-                            else continuation.resume(PrintResult.Error(code, msg ?: "Print failure"))
-                        }
-                    }
-                })
+                // Execute print buffer
+                service.exitPrinterBuffer(true)
+                if (continuation.isActive) {
+                    continuation.resume(PrintResult.Success)
+                }
 
             } catch (e: Exception) {
                 if (continuation.isActive) {
@@ -259,7 +241,7 @@ class SunmiAidlPrinterAdapter(
     ): PrintResult = withContext(Dispatchers.IO) {
         val service = woyouService ?: return@withContext PrintResult.PrinterUnavailable
 
-        return@withContext suspendCancellableCoroutine { continuation ->
+        return@withContext suspendCancellableCoroutine<PrintResult> { continuation ->
             try {
                 val is80mm = capabilities.paperWidth == PaperWidth.WIDTH_80MM
                 val divider = if (is80mm) "================================================" else "--------------------------------"
@@ -316,28 +298,11 @@ class SunmiAidlPrinterAdapter(
                     service.cutPaper(null)
                 }
 
-                service.exitPrinterBufferWithCallback(true, object : ICallback.Stub() {
-                    override fun onRunResult(isSuccess: Boolean) {
-                        if (isSuccess && continuation.isActive) {
-                            continuation.resume(PrintResult.Success)
-                        }
-                    }
-
-                    override fun onReturnString(result: String?) {}
-
-                    override fun onRaiseException(code: Int, msg: String?) {
-                        if (continuation.isActive) {
-                            continuation.resume(PrintResult.Error(code, msg ?: "Receipt print error"))
-                        }
-                    }
-
-                    override fun onPrintResult(code: Int, msg: String?) {
-                        if (continuation.isActive) {
-                            if (code == 0) continuation.resume(PrintResult.Success)
-                            else continuation.resume(PrintResult.Error(code, msg ?: "Receipt print failure"))
-                        }
-                    }
-                })
+                // Execute print buffer
+                service.exitPrinterBuffer(true)
+                if (continuation.isActive) {
+                    continuation.resume(PrintResult.Success)
+                }
 
             } catch (e: Exception) {
                 if (continuation.isActive) {
@@ -362,7 +327,7 @@ class SunmiAidlPrinterAdapter(
     ): PrintResult = withContext(Dispatchers.IO) {
         val service = woyouService ?: return@withContext PrintResult.PrinterUnavailable
 
-        return@withContext suspendCancellableCoroutine { continuation ->
+        return@withContext suspendCancellableCoroutine<PrintResult> { continuation ->
             try {
                 val is80mm = capabilities.paperWidth == PaperWidth.WIDTH_80MM
                 val divider = if (is80mm) "================================================" else "--------------------------------"
@@ -420,28 +385,11 @@ class SunmiAidlPrinterAdapter(
                     service.cutPaper(null)
                 }
 
-                service.exitPrinterBufferWithCallback(true, object : ICallback.Stub() {
-                    override fun onRunResult(isSuccess: Boolean) {
-                        if (isSuccess && continuation.isActive) {
-                            continuation.resume(PrintResult.Success)
-                        }
-                    }
-
-                    override fun onReturnString(result: String?) {}
-
-                    override fun onRaiseException(code: Int, msg: String?) {
-                        if (continuation.isActive) {
-                            continuation.resume(PrintResult.Error(code, msg ?: "Member pass print error"))
-                        }
-                    }
-
-                    override fun onPrintResult(code: Int, msg: String?) {
-                        if (continuation.isActive) {
-                            if (code == 0) continuation.resume(PrintResult.Success)
-                            else continuation.resume(PrintResult.Error(code, msg ?: "Member pass print failure"))
-                        }
-                    }
-                })
+                // Execute print buffer
+                service.exitPrinterBuffer(true)
+                if (continuation.isActive) {
+                    continuation.resume(PrintResult.Success)
+                }
 
             } catch (e: Exception) {
                 if (continuation.isActive) {

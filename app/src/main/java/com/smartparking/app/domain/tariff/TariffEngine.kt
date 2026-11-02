@@ -151,7 +151,7 @@ data class TariffConfig(
     val gracePeriodMinutes: Long,
     val minCharge: BigDecimal,
     val maxDailyCharge: BigDecimal?,
-    val lostTicketFee: BigDecimal,
+    val lostTicketFee: BigDecimal = BigDecimal("300.00"),
     val tiers: List<TariffTier>
 )
 

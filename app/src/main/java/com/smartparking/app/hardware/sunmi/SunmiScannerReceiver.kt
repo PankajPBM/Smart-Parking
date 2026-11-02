@@ -22,7 +22,7 @@ class SunmiScannerReceiver : BroadcastReceiver() {
 
             if (scanData.isNotEmpty()) {
                 // Emit scan result to Flow subscribers
-                instance?.emitScan(ScanResult(scanData, source))
+                emitScan(ScanResult(scanData, source))
             }
         }
     }
