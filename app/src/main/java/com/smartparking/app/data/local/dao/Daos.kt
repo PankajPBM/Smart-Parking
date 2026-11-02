@@ -37,8 +37,17 @@ interface ParkingSessionDao {
     @Query("SELECT COUNT(*) FROM parking_sessions WHERE entry_time >= :startOfDayTimestamp")
     fun getTodayEntriesCountFlow(startOfDayTimestamp: Long): Flow<Int>
 
+    @Query("SELECT COUNT(*) FROM parking_sessions WHERE entry_time >= :startOfDayTimestamp")
+    suspend fun getTodayEntriesCount(startOfDayTimestamp: Long): Int
+
     @Query("SELECT COUNT(*) FROM parking_sessions WHERE exit_time >= :startOfDayTimestamp AND status = 'EXITED'")
     fun getTodayExitsCountFlow(startOfDayTimestamp: Long): Flow<Int>
+
+    @Query("SELECT COUNT(*) FROM parking_sessions WHERE exit_time >= :startOfDayTimestamp AND status = 'EXITED'")
+    suspend fun getTodayExitsCount(startOfDayTimestamp: Long): Int
+
+    @Query("SELECT * FROM parking_sessions WHERE exit_time >= :startOfDayTimestamp AND status = 'EXITED'")
+    suspend fun getTodayExits(startOfDayTimestamp: Long): List<ParkingSessionEntity>
 
     @Query("SELECT * FROM parking_sessions WHERE (vehicle_number LIKE '%' || :query || '%' OR ticket_number LIKE '%' || :query || '%') ORDER BY entry_time DESC LIMIT 50")
     suspend fun searchSessions(query: String): List<ParkingSessionEntity>

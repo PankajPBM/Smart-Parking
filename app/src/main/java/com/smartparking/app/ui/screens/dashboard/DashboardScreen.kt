@@ -2,6 +2,7 @@
 
 package com.smartparking.app.ui.screens.dashboard
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -10,6 +11,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -27,6 +29,7 @@ import com.smartparking.app.data.local.entity.ParkingSessionEntity
 import com.smartparking.app.hardware.capability.DeviceCapabilities
 import com.smartparking.app.license.PbLicenseService
 import com.smartparking.app.ui.theme.*
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -62,6 +65,14 @@ fun DashboardScreen(
 
     val totalCapacity = 200
     val availableSpots = (totalCapacity - parkedCount).coerceAtLeast(0)
+    val coroutineScope = rememberCoroutineScope()
+
+    // Real-time Cloud Sync on launch
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            com.smartparking.app.sync.ParkingSyncService.getInstance(context).syncWithCloud()
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -69,7 +80,16 @@ fun DashboardScreen(
                 capabilities = capabilities,
                 licenseState = licenseState,
                 onLicenseClick = { navController.navigate("license") },
-                onInfoClick = { navController.navigate("device_info") }
+                onInfoClick = { navController.navigate("device_info") },
+                onSyncClick = {
+                    coroutineScope.launch {
+                        Toast.makeText(context, "Syncing with PB Cloud...", Toast.LENGTH_SHORT).show()
+                        val res = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            com.smartparking.app.sync.ParkingSyncService.getInstance(context).syncWithCloud()
+                        }
+                        Toast.makeText(context, res.message, Toast.LENGTH_LONG).show()
+                    }
+                }
             )
         }
     ) { paddingValues ->
@@ -193,7 +213,8 @@ fun DashboardTopBar(
     capabilities: DeviceCapabilities?,
     licenseState: PbLicenseService.LicenseState,
     onLicenseClick: () -> Unit,
-    onInfoClick: () -> Unit
+    onInfoClick: () -> Unit,
+    onSyncClick: () -> Unit
 ) {
     TopAppBar(
         title = {
@@ -211,6 +232,15 @@ fun DashboardTopBar(
             }
         },
         actions = {
+            // Manual Cloud Sync button
+            IconButton(onClick = onSyncClick) {
+                Icon(
+                    imageVector = Icons.Default.Sync,
+                    contentDescription = "Sync with Cloud",
+                    tint = PrimaryBlue
+                )
+            }
+
             // License status badge pill (clickable)
             Surface(
                 modifier = Modifier

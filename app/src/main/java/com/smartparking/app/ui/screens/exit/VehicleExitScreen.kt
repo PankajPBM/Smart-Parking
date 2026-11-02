@@ -29,6 +29,7 @@ import com.smartparking.app.data.local.entity.MembershipEntity
 import com.smartparking.app.data.local.entity.ParkingSessionEntity
 import com.smartparking.app.domain.tariff.TariffConfig
 import com.smartparking.app.domain.tariff.TariffEngine
+import com.smartparking.app.domain.tariff.TariffRepository
 import com.smartparking.app.domain.tariff.TariffTier
 import com.smartparking.app.ui.theme.*
 import kotlinx.coroutines.Dispatchers
@@ -107,25 +108,12 @@ fun VehicleExitScreen(
                         coroutineScope.launch(Dispatchers.IO) {
                             val activeMember = database.membershipDao().getActiveMembershipForVehicle(session.vehicleNumber, exitTimeEpoch)
 
-                            // Default tariff configuration
-                            val isBike = session.vehicleTypeId == "MOTORCYCLE"
-                            val defaultTariff = TariffConfig(
-                                id = if (isBike) "bike_tariff" else "car_tariff",
-                                name = if (isBike) "Motorcycle Tariff" else "Car Tariff",
-                                vehicleTypeId = session.vehicleTypeId,
-                                gracePeriodMinutes = 10,
-                                minCharge = if (isBike) BigDecimal("25.00") else BigDecimal("40.00"),
-                                maxDailyCharge = if (isBike) BigDecimal("200.00") else BigDecimal("500.00"),
-                                tiers = listOf(
-                                    TariffTier(0, 60, if (isBike) BigDecimal("25.00") else BigDecimal("50.00"), isFixed = true),
-                                    TariffTier(60, 120, if (isBike) BigDecimal("40.00") else BigDecimal("80.00"), isFixed = true),
-                                    TariffTier(120, null, if (isBike) BigDecimal("15.00") else BigDecimal("30.00"), isFixed = false)
-                                )
-                            )
+                            // Dynamic tariff configuration (synced from Cloudflare portal or cached defaults)
+                            val activeTariff = TariffRepository.getInstance(context).getTariff(session.vehicleTypeId)
 
                             val calcResult = tariffEngine.calculateFee(
                                 durationMinutes = durationMinutes,
-                                tariffConfig = defaultTariff,
+                                tariffConfig = activeTariff,
                                 isLostTicket = false,
                                 memberDiscountPercent = activeMember?.discountPercent,
                                 memberInfo = activeMember?.let { "${it.planType} Pass" }
