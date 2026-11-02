@@ -58,6 +58,20 @@ interface ParkingPrinter {
         operatorName: String
     ): PrintResult
 
+    suspend fun printMembershipPass(
+        siteName: String,
+        memberNo: String,
+        memberName: String,
+        phone: String,
+        vehicleNo: String,
+        vehicleType: String,
+        planType: String,
+        validFrom: String,
+        validUntil: String,
+        amountPaid: String,
+        operatorName: String
+    ): PrintResult
+
     suspend fun getPrinterStatus(): PrintResult
 }
 
@@ -328,6 +342,110 @@ class SunmiAidlPrinterAdapter(
             } catch (e: Exception) {
                 if (continuation.isActive) {
                     continuation.resume(PrintResult.Error(-1, e.message ?: "Exception in receipt printing"))
+                }
+            }
+        }
+    }
+
+    override suspend fun printMembershipPass(
+        siteName: String,
+        memberNo: String,
+        memberName: String,
+        phone: String,
+        vehicleNo: String,
+        vehicleType: String,
+        planType: String,
+        validFrom: String,
+        validUntil: String,
+        amountPaid: String,
+        operatorName: String
+    ): PrintResult = withContext(Dispatchers.IO) {
+        val service = woyouService ?: return@withContext PrintResult.PrinterUnavailable
+
+        return@withContext suspendCancellableCoroutine { continuation ->
+            try {
+                val is80mm = capabilities.paperWidth == PaperWidth.WIDTH_80MM
+                val divider = if (is80mm) "================================================" else "--------------------------------"
+
+                service.enterPrinterBuffer(true)
+
+                // Header
+                service.setAlignment(1, null)
+                service.setFontSize(if (is80mm) 32f else 26f, null)
+                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x01), null)
+                service.printText("VIP MEMBERSHIP PASS\n", null)
+                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x00), null)
+
+                service.setFontSize(18f, null)
+                service.printText("$siteName\n", null)
+                service.printText("PB SMART PARKING\n", null)
+                service.printText("$divider\n", null)
+
+                // Member QR code for fast entry/exit scanning
+                service.setAlignment(1, null)
+                service.printQRCode(memberNo, 6, 2, null)
+                service.printText("\n", null)
+
+                // Details
+                service.setAlignment(0, null)
+                service.setFontSize(20f, null)
+                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x01), null)
+                service.printText("PASS NO : $memberNo\n", null)
+                service.printText("MEMBER  : $memberName\n", null)
+                service.printText("VEHICLE : $vehicleNo\n", null)
+                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x00), null)
+
+                service.printText("TYPE    : $vehicleType\n", null)
+                service.printText("PHONE   : $phone\n", null)
+                service.printText("PLAN    : $planType\n", null)
+                service.printText("VALID   : $validFrom\n", null)
+                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x01), null)
+                service.printText("EXPIRES : $validUntil\n", null)
+                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x00), null)
+                service.printText("$divider\n", null)
+
+                // Fee Info
+                service.setAlignment(2, null)
+                service.printText("FEE PAID : NPR $amountPaid\n", null)
+                service.printText("$divider\n", null)
+
+                // Footer
+                service.setAlignment(1, null)
+                service.printText("Issued By: $operatorName\n", null)
+                service.printText("Scan QR at gate for instant zero-fee access\n", null)
+                service.printText("PB Tech Zone - 9814891277\n\n", null)
+
+                service.lineWrap(3, null)
+                if (is80mm) {
+                    service.cutPaper(null)
+                }
+
+                service.exitPrinterBufferWithCallback(true, object : ICallback.Stub() {
+                    override fun onRunResult(isSuccess: Boolean) {
+                        if (isSuccess && continuation.isActive) {
+                            continuation.resume(PrintResult.Success)
+                        }
+                    }
+
+                    override fun onReturnString(result: String?) {}
+
+                    override fun onRaiseException(code: Int, msg: String?) {
+                        if (continuation.isActive) {
+                            continuation.resume(PrintResult.Error(code, msg ?: "Member pass print error"))
+                        }
+                    }
+
+                    override fun onPrintResult(code: Int, msg: String?) {
+                        if (continuation.isActive) {
+                            if (code == 0) continuation.resume(PrintResult.Success)
+                            else continuation.resume(PrintResult.Error(code, msg ?: "Member pass print failure"))
+                        }
+                    }
+                })
+
+            } catch (e: Exception) {
+                if (continuation.isActive) {
+                    continuation.resume(PrintResult.Error(-1, e.message ?: "Exception printing member pass"))
                 }
             }
         }

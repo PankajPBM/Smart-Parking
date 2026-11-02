@@ -22,7 +22,9 @@ class TariffEngine {
     fun calculateFee(
         durationMinutes: Long,
         tariffConfig: TariffConfig,
-        isLostTicket: Boolean = false
+        isLostTicket: Boolean = false,
+        memberDiscountPercent: Int? = null,
+        memberInfo: String? = null
     ): TariffCalculationResult {
 
         // Lost ticket penalty
@@ -92,11 +94,23 @@ class TariffEngine {
             totalFee = tariffConfig.maxDailyCharge
         }
 
+        val gross = totalFee.setScale(2, RoundingMode.HALF_UP)
+        var discount = BigDecimal.ZERO
+        var net = gross
+
+        if (memberDiscountPercent != null && memberDiscountPercent > 0) {
+            val pct = memberDiscountPercent.coerceIn(0, 100)
+            discount = gross.multiply(BigDecimal(pct)).divide(BigDecimal(100), 2, RoundingMode.HALF_UP)
+            net = gross.subtract(discount).max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP)
+            val infoTag = memberInfo?.let { " ($it)" } ?: ""
+            breakdownParts.add("Member Pass Discount -$pct%$infoTag: -${formatCurrency(discount)}")
+        }
+
         return TariffCalculationResult(
             durationMinutes = durationMinutes,
-            grossAmount = totalFee.setScale(2, RoundingMode.HALF_UP),
-            discountAmount = BigDecimal.ZERO,
-            netAmount = totalFee.setScale(2, RoundingMode.HALF_UP),
+            grossAmount = gross,
+            discountAmount = discount,
+            netAmount = net,
             breakdown = breakdownParts.joinToString(" + ")
         )
     }

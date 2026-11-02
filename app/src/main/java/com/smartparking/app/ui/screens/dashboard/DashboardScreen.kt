@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalMaterial3Api::class)
+
 package com.smartparking.app.ui.screens.dashboard
 
 import androidx.compose.foundation.background
@@ -8,28 +10,65 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import com.smartparking.app.data.local.SmartParkingDatabase
+import com.smartparking.app.data.local.entity.ParkingSessionEntity
 import com.smartparking.app.hardware.capability.DeviceCapabilities
+import com.smartparking.app.license.PbLicenseService
 import com.smartparking.app.ui.theme.*
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun DashboardScreen(
     navController: NavController,
     capabilities: DeviceCapabilities? = null
 ) {
+    val context = LocalContext.current
+    val database = remember { SmartParkingDatabase.getInstance(context) }
+    val licenseService = remember { PbLicenseService.getInstance(context) }
+
+    var licenseState by remember { mutableStateOf(licenseService.getLicenseState()) }
+
+    // Start of current day timestamp
+    val startOfDay = remember {
+        Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+    }
+
+    // Live Room DB flows
+    val parkedCount by database.parkingSessionDao().getCurrentlyParkedCountFlow().collectAsState(initial = 0)
+    val todayEntries by database.parkingSessionDao().getTodayEntriesCountFlow(startOfDay).collectAsState(initial = 0)
+    val todayExits by database.parkingSessionDao().getTodayExitsCountFlow(startOfDay).collectAsState(initial = 0)
+    val liveParkedSessions by database.parkingSessionDao().getParkedSessionsFlow().collectAsState(initial = emptyList())
+    val activeMembersCount by database.membershipDao().getActiveMembersCountFlow().collectAsState(initial = 0)
+
+    val totalCapacity = 200
+    val availableSpots = (totalCapacity - parkedCount).coerceAtLeast(0)
+
     Scaffold(
         topBar = {
             DashboardTopBar(
                 capabilities = capabilities,
+                licenseState = licenseState,
+                onLicenseClick = { navController.navigate("license") },
                 onInfoClick = { navController.navigate("device_info") }
             )
         }
@@ -58,47 +97,92 @@ fun DashboardScreen(
             // 2. Live Statistics Overview (Cards)
             item {
                 StatisticsOverview(
-                    totalCapacity = 200,
-                    currentlyParked = 83,
-                    todayEntries = 42,
-                    todayRevenue = "18,450"
+                    totalCapacity = totalCapacity,
+                    currentlyParked = parkedCount,
+                    todayEntries = todayEntries,
+                    activeMembers = activeMembersCount
                 )
             }
 
-            // 3. Quick Action Buttons
+            // 3. Quick Action Buttons (6 Aligned Actions)
             item {
                 QuickActionSection(
                     onEntryClick = { navController.navigate("entry") },
                     onExitClick = { navController.navigate("exit") },
-                    onSearchClick = { navController.navigate("device_info") },
-                    onReportsClick = { navController.navigate("device_info") }
+                    onMembershipClick = { navController.navigate("membership") },
+                    onLicenseClick = { navController.navigate("license") },
+                    onReportsClick = { navController.navigate("reports") },
+                    onDeviceClick = { navController.navigate("device_info") }
                 )
             }
 
-            // 4. Occupancy Bar
+            // 4. Live Occupancy Bar
             item {
                 OccupancyCard(
-                    total = 200,
-                    occupied = 83,
-                    available = 117
+                    total = totalCapacity,
+                    occupied = parkedCount,
+                    available = availableSpots
                 )
             }
 
             // 5. Recent Activity Header
             item {
-                Text(
-                    text = "Recent Activity",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Currently Parked Vehicles (${liveParkedSessions.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    TextButton(onClick = { navController.navigate("reports") }) {
+                        Text("View All Logs")
+                    }
+                }
             }
 
-            // 6. Recent Parked Vehicles List
-            items(sampleRecentVehicles) { vehicle ->
-                RecentVehicleItem(vehicle = vehicle)
+            // 6. Parked Vehicles List
+            if (liveParkedSessions.isEmpty()) {
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(text = "🅿️", fontSize = 32.sp)
+                            Text(
+                                text = "No vehicles currently parked",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Tap \"Vehicle Entry\" to record and print ticket for incoming vehicles.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            } else {
+                items(liveParkedSessions.take(10), key = { it.id }) { session ->
+                    LiveParkedVehicleItem(
+                        session = session,
+                        onExitClick = { navController.navigate("exit") }
+                    )
+                }
             }
 
-            item { Spacer(modifier = Modifier.height(16.dp)) }
+            item { Spacer(modifier = Modifier.height(24.dp)) }
         }
     }
 }
@@ -107,6 +191,8 @@ fun DashboardScreen(
 @Composable
 fun DashboardTopBar(
     capabilities: DeviceCapabilities?,
+    licenseState: PbLicenseService.LicenseState,
+    onLicenseClick: () -> Unit,
     onInfoClick: () -> Unit
 ) {
     TopAppBar(
@@ -118,13 +204,46 @@ fun DashboardTopBar(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = capabilities?.let { "${it.manufacturer} ${it.model} • SN: ${it.serialNumber}" } ?: "Kathmandu Terminal • SUNMI POS",
+                    text = capabilities?.let { "${it.manufacturer} ${it.model} • SN: ${it.serialNumber}" } ?: "Terminal • SUNMI POS",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         },
         actions = {
+            // License status badge pill (clickable)
+            Surface(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(16.dp))
+                    .clickable { onLicenseClick() },
+                color = when (licenseState) {
+                    is PbLicenseService.LicenseState.ProActive -> SuccessGreen.copy(alpha = 0.15f)
+                    is PbLicenseService.LicenseState.TrialActive -> PrimaryBlue.copy(alpha = 0.15f)
+                    is PbLicenseService.LicenseState.Expired -> ErrorRed.copy(alpha = 0.15f)
+                }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = when (licenseState) {
+                            is PbLicenseService.LicenseState.ProActive -> "👑 PRO"
+                            is PbLicenseService.LicenseState.TrialActive -> "⏳ ${(licenseState as PbLicenseService.LicenseState.TrialActive).daysRemaining}d Trial"
+                            is PbLicenseService.LicenseState.Expired -> "🔴 Expired"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = when (licenseState) {
+                            is PbLicenseService.LicenseState.ProActive -> SuccessGreen
+                            is PbLicenseService.LicenseState.TrialActive -> PrimaryBlue
+                            is PbLicenseService.LicenseState.Expired -> ErrorRed
+                        }
+                    )
+                }
+            }
+
             IconButton(onClick = onInfoClick) {
                 Icon(
                     imageVector = Icons.Default.Info,
@@ -151,7 +270,7 @@ fun DeviceStatusBanner(
             .fillMaxWidth()
             .clickable { onBannerClick() },
         shape = RoundedCornerShape(12.dp),
-        color = if (isSunmi) PrimaryBlue.copy(alpha = 0.08f) else SurfaceVariantLight,
+        color = if (isSunmi) PrimaryBlue.copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceVariant,
         border = CardDefaults.outlinedCardBorder()
     ) {
         Row(
@@ -181,17 +300,16 @@ fun DeviceStatusBanner(
                 }
             }
 
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(SuccessGreen.copy(alpha = 0.15f))
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = SuccessGreen.copy(alpha = 0.15f)
             ) {
                 Text(
-                    text = "● ONLINE",
+                    text = "HARDWARE READY",
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                     style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = SuccessGreen
+                    color = SuccessGreen,
+                    fontWeight = FontWeight.Bold
                 )
             }
         }
@@ -203,7 +321,7 @@ fun StatisticsOverview(
     totalCapacity: Int,
     currentlyParked: Int,
     todayEntries: Int,
-    todayRevenue: String
+    activeMembers: Int
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(
@@ -212,8 +330,8 @@ fun StatisticsOverview(
         ) {
             StatCard(
                 modifier = Modifier.weight(1f),
-                title = "Total Spaces",
-                value = "$totalCapacity",
+                title = "Total Capacity",
+                value = "$totalCapacity spots",
                 icon = "🅿️",
                 color = PrimaryBlue
             )
@@ -239,10 +357,10 @@ fun StatisticsOverview(
             )
             StatCard(
                 modifier = Modifier.weight(1f),
-                title = "Today Revenue",
-                value = "NPR $todayRevenue",
-                icon = "💰",
-                color = WarningOrange
+                title = "Active Passes",
+                value = "$activeMembers VIPs",
+                icon = "👑",
+                color = AmberWarning
             )
         }
     }
@@ -294,19 +412,22 @@ fun StatCard(
 fun QuickActionSection(
     onEntryClick: () -> Unit,
     onExitClick: () -> Unit,
-    onSearchClick: () -> Unit,
-    onReportsClick: () -> Unit
+    onMembershipClick: () -> Unit,
+    onLicenseClick: () -> Unit,
+    onReportsClick: () -> Unit,
+    onDeviceClick: () -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
             text = "Quick Actions",
             style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onBackground
         )
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             ActionButton(
                 modifier = Modifier.weight(1f),
@@ -326,21 +447,41 @@ fun QuickActionSection(
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             ActionButton(
                 modifier = Modifier.weight(1f),
-                label = "Device Info",
-                icon = "📱",
-                backgroundColor = InfoBlue,
-                onClick = onSearchClick
+                label = "Memberships",
+                icon = "👑",
+                backgroundColor = AmberWarning,
+                onClick = onMembershipClick
             )
             ActionButton(
                 modifier = Modifier.weight(1f),
-                label = "App Details",
-                icon = "ℹ️",
-                backgroundColor = WarningOrange,
+                label = "PB License",
+                icon = "🔑",
+                backgroundColor = PrimaryBlue,
+                onClick = onLicenseClick
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            ActionButton(
+                modifier = Modifier.weight(1f),
+                label = "History & Logs",
+                icon = "📊",
+                backgroundColor = InfoBlue,
                 onClick = onReportsClick
+            )
+            ActionButton(
+                modifier = Modifier.weight(1f),
+                label = "Device Info",
+                icon = "⚙️",
+                backgroundColor = DarkSlate,
+                onClick = onDeviceClick
             )
         }
     }
@@ -368,6 +509,7 @@ fun ActionButton(
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
                 color = Color.White
             )
         }
@@ -380,7 +522,7 @@ fun OccupancyCard(
     occupied: Int,
     available: Int
 ) {
-    val percentage = if (total > 0) (occupied.toFloat() / total.toFloat()) else 0f
+    val percentage = if (total > 0) (occupied.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -400,12 +542,12 @@ fun OccupancyCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Occupancy Status",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface
+                    text = "Parking Occupancy",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "${(percentage * 100).toInt()}%",
+                    text = "${(percentage * 100).toInt()}% Full",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = if (percentage > 0.85f) ErrorRed else PrimaryBlue
@@ -413,11 +555,11 @@ fun OccupancyCard(
             }
 
             LinearProgressIndicator(
-                progress = percentage,
+                progress = { percentage },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(8.dp)
-                    .clip(RoundedCornerShape(4.dp)),
+                    .height(10.dp)
+                    .clip(RoundedCornerShape(5.dp)),
                 color = if (percentage > 0.85f) ErrorRed else PrimaryBlue,
                 trackColor = MaterialTheme.colorScheme.surfaceVariant
             )
@@ -434,6 +576,7 @@ fun OccupancyCard(
                 Text(
                     text = "Available: $available",
                     style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Bold,
                     color = SuccessGreen
                 )
             }
@@ -442,18 +585,22 @@ fun OccupancyCard(
 }
 
 @Composable
-fun RecentVehicleItem(vehicle: RecentVehicle) {
+fun LiveParkedVehicleItem(
+    session: ParkingSessionEntity,
+    onExitClick: () -> Unit
+) {
+    val dateFormat = SimpleDateFormat("hh:mm a", Locale.getDefault())
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        )
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .padding(14.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -461,53 +608,37 @@ fun RecentVehicleItem(vehicle: RecentVehicle) {
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(vehicle.typeColor.copy(alpha = 0.15f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(text = vehicle.icon, fontSize = 20.sp)
-                }
-
+                Text(
+                    text = when (session.vehicleTypeId) {
+                        "MOTORCYCLE" -> "🏍"
+                        "VAN" -> "🚐"
+                        "BUS" -> "🚌"
+                        else -> "🚗"
+                    },
+                    fontSize = 24.sp
+                )
                 Column {
                     Text(
-                        text = vehicle.plateNumber,
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
+                        text = session.vehicleNumber,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "${vehicle.type} • Entry: ${vehicle.entryTime}",
+                        text = "Entered: ${dateFormat.format(Date(session.entryTime))} • ${session.ticketNumber}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
-            Text(
-                text = vehicle.duration,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                color = PrimaryBlue
-            )
+            Button(
+                onClick = onExitClick,
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Text("Exit", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
         }
     }
 }
-
-data class RecentVehicle(
-    val plateNumber: String,
-    val type: String,
-    val icon: String,
-    val typeColor: Color,
-    val entryTime: String,
-    val duration: String
-)
-
-val sampleRecentVehicles = listOf(
-    RecentVehicle("BA 12 PA 1234", "Car", "🚗", VehicleCar, "09:42 AM", "2h 18m"),
-    RecentVehicle("BA 45 PA 9876", "Motorcycle", "🏍", VehicleMotorcycle, "10:15 AM", "1h 45m"),
-    RecentVehicle("GA 01 PA 5544", "Van", "🚐", VehicleVan, "10:30 AM", "1h 30m"),
-    RecentVehicle("BA 99 PA 1122", "Car", "🚗", VehicleCar, "11:00 AM", "1h 00m")
-)

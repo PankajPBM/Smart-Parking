@@ -9,17 +9,24 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.smartparking.app.hardware.capability.AppMetadata
 import com.smartparking.app.hardware.capability.DeviceCapabilities
 import com.smartparking.app.hardware.printer.UniversalHardwareService
+import com.smartparking.app.license.PbLicenseService
 import com.smartparking.app.ui.screens.dashboard.DashboardScreen
 import com.smartparking.app.ui.screens.entry.VehicleEntryScreen
 import com.smartparking.app.ui.screens.exit.VehicleExitScreen
 import com.smartparking.app.ui.screens.info.DeviceAndAppInfoScreen
+import com.smartparking.app.ui.screens.license.LicenseScreen
+import com.smartparking.app.ui.screens.membership.MembershipScreen
+import com.smartparking.app.ui.screens.reports.ReportsScreen
 import com.smartparking.app.ui.theme.SmartParkingTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -27,11 +34,19 @@ import java.util.Locale
 class MainActivity : ComponentActivity() {
 
     private lateinit var hardwareService: UniversalHardwareService
+    private lateinit var licenseService: PbLicenseService
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         hardwareService = UniversalHardwareService.getInstance(this)
+        licenseService = PbLicenseService.getInstance(this)
+
+        // Asynchronously check heartbeat with PB License Authority in background
+        lifecycleScope.launch(Dispatchers.IO) {
+            licenseService.sendHeartbeat()
+        }
+
         val capabilities = hardwareService.capabilities
         val appMetadata = AppMetadata()
 
@@ -59,7 +74,7 @@ class MainActivity : ComponentActivity() {
                                 rateInfo = "Standard Rate"
                             ) {
                                 runOnUiThread {
-                                    Toast.makeText(this@MainActivity, "Entry Recorded & Printed: $ticketNo", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(this@MainActivity, "Entry Ticket Printed: $ticketNo", Toast.LENGTH_SHORT).show()
                                 }
                             }
                         },
@@ -141,6 +156,21 @@ fun SmartParkingAppNavigation(
             VehicleExitScreen(
                 navController = navController,
                 onProcessExit = onProcessExit
+            )
+        }
+        composable("membership") {
+            MembershipScreen(
+                navController = navController
+            )
+        }
+        composable("license") {
+            LicenseScreen(
+                navController = navController
+            )
+        }
+        composable("reports") {
+            ReportsScreen(
+                navController = navController
             )
         }
         composable("device_info") {

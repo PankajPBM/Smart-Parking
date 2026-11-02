@@ -129,3 +129,44 @@ interface AuditLogDao {
     @Query("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 100")
     fun getRecentLogsFlow(): Flow<List<AuditLogEntity>>
 }
+
+@Dao
+interface MembershipDao {
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertMembership(membership: MembershipEntity)
+
+    @Update
+    suspend fun updateMembership(membership: MembershipEntity)
+
+    @Delete
+    suspend fun deleteMembership(membership: MembershipEntity)
+
+    @Query("SELECT * FROM memberships WHERE id = :id")
+    suspend fun getMembershipById(id: String): MembershipEntity?
+
+    @Query("SELECT * FROM memberships WHERE member_number = :memberNumber LIMIT 1")
+    suspend fun getMembershipByNumber(memberNumber: String): MembershipEntity?
+
+    @Query("SELECT * FROM memberships WHERE vehicle_number = :vehicleNumber AND is_active = 1 AND end_date >= :currentTime LIMIT 1")
+    suspend fun getActiveMembershipForVehicle(vehicleNumber: String, currentTime: Long = System.currentTimeMillis()): MembershipEntity?
+
+    @Query("SELECT * FROM memberships ORDER BY created_at DESC")
+    fun getAllMembershipsFlow(): Flow<List<MembershipEntity>>
+
+    @Query("SELECT * FROM memberships WHERE is_active = 1 AND end_date >= :currentTime ORDER BY end_date ASC")
+    fun getActiveMembershipsFlow(currentTime: Long = System.currentTimeMillis()): Flow<List<MembershipEntity>>
+
+    @Query("SELECT * FROM memberships WHERE (vehicle_number LIKE '%' || :query || '%' OR full_name LIKE '%' || :query || '%' OR phone LIKE '%' || :query || '%' OR member_number LIKE '%' || :query || '%') ORDER BY created_at DESC")
+    suspend fun searchMemberships(query: String): List<MembershipEntity>
+
+    @Query("SELECT COUNT(*) FROM memberships")
+    fun getTotalMembersCountFlow(): Flow<Int>
+
+    @Query("SELECT COUNT(*) FROM memberships WHERE is_active = 1 AND end_date >= :currentTime")
+    fun getActiveMembersCountFlow(currentTime: Long = System.currentTimeMillis()): Flow<Int>
+
+    @Query("SELECT COUNT(*) FROM memberships WHERE is_active = 1 AND end_date >= :currentTime")
+    suspend fun getActiveMembersCount(currentTime: Long = System.currentTimeMillis()): Int
+}
+

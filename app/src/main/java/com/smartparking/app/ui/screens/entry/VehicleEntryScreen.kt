@@ -1,29 +1,39 @@
 package com.smartparking.app.ui.screens.entry
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import com.smartparking.app.data.local.SmartParkingDatabase
+import com.smartparking.app.data.local.entity.MembershipEntity
+import com.smartparking.app.data.local.entity.ParkingSessionEntity
 import com.smartparking.app.ui.theme.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.UUID
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -31,11 +41,38 @@ fun VehicleEntryScreen(
     navController: NavController,
     onGenerateTicket: (plateNumber: String, vehicleType: String, zone: String, customerPhone: String) -> Unit = { _, _, _, _ -> }
 ) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val database = remember { SmartParkingDatabase.getInstance(context) }
+
     var plateNumber by remember { mutableStateOf("") }
     var selectedVehicleType by remember { mutableStateOf("CAR") }
     var selectedZone by remember { mutableStateOf("Ground Floor - A") }
     var customerPhone by remember { mutableStateOf("") }
     var isPrinting by remember { mutableStateOf(false) }
+
+    var matchedMember by remember { mutableStateOf<MembershipEntity?>(null) }
+
+    // Real-time lookup for active membership whenever plate number is entered
+    LaunchedEffect(plateNumber) {
+        val cleanPlate = plateNumber.trim().uppercase(Locale.US)
+        if (cleanPlate.length >= 4) {
+            withContext(Dispatchers.IO) {
+                val member = database.membershipDao().getActiveMembershipForVehicle(cleanPlate)
+                withContext(Dispatchers.Main) {
+                    matchedMember = member
+                    member?.let {
+                        selectedVehicleType = it.vehicleTypeId
+                        if (it.phone.isNotBlank() && customerPhone.isBlank()) {
+                            customerPhone = it.phone
+                        }
+                    }
+                }
+            }
+        } else {
+            matchedMember = null
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -56,11 +93,13 @@ fun VehicleEntryScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(16.dp)
+                .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 1. Plate Number Input (Large touch target)
+            Spacer(modifier = Modifier.height(2.dp))
+
+            // 1. Plate Number Input
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "Vehicle License Plate *",
@@ -89,7 +128,69 @@ fun VehicleEntryScreen(
                 )
             }
 
-            // 2. Vehicle Type Selector (Large Cards)
+            // 2. VIP Membership Found Banner
+            matchedMember?.let { member ->
+                val dateFormat = SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    color = PrimaryBlue.copy(alpha = 0.12f),
+                    border = CardDefaults.outlinedCardBorder()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = PrimaryBlue,
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Star, contentDescription = null, tint = Color.White)
+                            }
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = "VIP MEMBER PASS DETECTED",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = PrimaryBlue,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = SuccessGreen
+                                ) {
+                                    Text(
+                                        text = "FREE PASS",
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                                        fontSize = 10.sp,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                            Text(
+                                text = "${member.fullName} (${member.memberNumber})",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Valid until ${dateFormat.format(Date(member.endDate))} - 100% Zero Fee at Exit",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 3. Vehicle Type Selector (Large Cards)
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "Vehicle Type",
@@ -112,7 +213,7 @@ fun VehicleEntryScreen(
                 }
             }
 
-            // 3. Zone Picker
+            // 4. Zone Picker
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "Parking Zone",
@@ -134,7 +235,7 @@ fun VehicleEntryScreen(
                 }
             }
 
-            // 4. Optional Customer Phone (for SMS receipt)
+            // 5. Optional Customer Phone
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "Customer Phone (Optional)",
@@ -153,15 +254,43 @@ fun VehicleEntryScreen(
                 )
             }
 
-            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.height(24.dp))
 
-            // 5. Generate & Auto Print Button
+            // 6. Generate & Auto Print Button (Properly positioned without weight crash)
             Button(
                 onClick = {
                     if (plateNumber.isNotBlank()) {
                         isPrinting = true
-                        onGenerateTicket(plateNumber, selectedVehicleType, selectedZone, customerPhone)
-                        navController.popBackStack()
+                        val cleanPlate = plateNumber.trim().uppercase(Locale.US)
+                        val nowEpoch = System.currentTimeMillis()
+                        val ticketNo = "SP-" + SimpleDateFormat("yyyyMMdd", Locale.US).format(Date(nowEpoch)) + "-" + (1000..9999).random()
+
+                        coroutineScope.launch {
+                            // Save real session in database
+                            withContext(Dispatchers.IO) {
+                                val session = ParkingSessionEntity(
+                                    id = UUID.randomUUID().toString(),
+                                    ticketNumber = ticketNo,
+                                    siteId = "site_default_01",
+                                    vehicleNumber = cleanPlate,
+                                    vehicleTypeId = selectedVehicleType,
+                                    customerPhone = customerPhone.ifBlank { null },
+                                    entryTime = nowEpoch,
+                                    status = "PARKED",
+                                    notes = matchedMember?.let { "Member Pass: ${it.memberNumber} (${it.fullName})" }
+                                )
+                                database.parkingSessionDao().insertSession(session)
+                            }
+
+                            // Trigger print
+                            onGenerateTicket(cleanPlate, selectedVehicleType, selectedZone, customerPhone)
+
+                            withContext(Dispatchers.Main) {
+                                isPrinting = false
+                                Toast.makeText(context, "Entry Recorded: $ticketNo", Toast.LENGTH_SHORT).show()
+                                navController.popBackStack()
+                            }
+                        }
                     }
                 },
                 enabled = plateNumber.isNotBlank() && !isPrinting,
@@ -180,13 +309,15 @@ fun VehicleEntryScreen(
                     ) {
                         Text(text = "🖨️", fontSize = 22.sp)
                         Text(
-                            text = "GENERATE & PRINT TICKET",
+                            text = if (matchedMember != null) "PRINT VIP PASS ENTRY" else "GENERATE & PRINT TICKET",
                             style = MaterialTheme.typography.labelLarge,
                             fontSize = 16.sp
                         )
                     }
                 }
             }
+
+            Spacer(modifier = Modifier.height(24.dp))
         }
     }
 }

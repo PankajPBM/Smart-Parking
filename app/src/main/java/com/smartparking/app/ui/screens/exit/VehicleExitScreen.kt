@@ -1,24 +1,59 @@
 package com.smartparking.app.ui.screens.exit
 
+import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import com.smartparking.app.data.local.SmartParkingDatabase
+import com.smartparking.app.data.local.entity.MembershipEntity
+import com.smartparking.app.data.local.entity.ParkingSessionEntity
+import com.smartparking.app.domain.tariff.TariffConfig
+import com.smartparking.app.domain.tariff.TariffEngine
+import com.smartparking.app.domain.tariff.TariffTier
 import com.smartparking.app.ui.theme.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.math.BigDecimal
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+data class ExitVehicleInfo(
+    val sessionId: String,
+    val ticketNumber: String,
+    val vehicleNumber: String,
+    val vehicleType: String,
+    val entryTimeMillis: Long,
+    val entryTime: String,
+    val exitTime: String,
+    val duration: String,
+    val durationMinutes: Long,
+    val parkingFee: String,
+    val discount: String,
+    val totalPaid: String,
+    val membership: MembershipEntity? = null
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -26,15 +61,109 @@ fun VehicleExitScreen(
     navController: NavController,
     onProcessExit: (ticketNumber: String, paymentMethod: String) -> Unit = { _, _ -> }
 ) {
-    var scanMode by remember { mutableStateOf(true) }
-    var ticketNumber by remember { mutableStateOf("") }
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val database = remember { SmartParkingDatabase.getInstance(context) }
+    val tariffEngine = remember { TariffEngine() }
+
+    var searchQuery by remember { mutableStateOf("") }
     var vehicleFound by remember { mutableStateOf<ExitVehicleInfo?>(null) }
     var selectedPayment by remember { mutableStateOf("CASH") }
+    var isSearching by remember { mutableStateOf(false) }
+    var isCompleting by remember { mutableStateOf(false) }
+    var searchError by remember { mutableStateOf<String?>(null) }
+
+    fun lookupVehicle(queryStr: String) {
+        val clean = queryStr.trim().uppercase(Locale.US)
+        if (clean.isBlank()) return
+        isSearching = true
+        searchError = null
+
+        coroutineScope.launch {
+            withContext(Dispatchers.IO) {
+                // Search session by ticket number or active vehicle plate
+                var session = database.parkingSessionDao().getSessionByTicketNumber(clean)
+                if (session == null || session.status != "PARKED") {
+                    session = database.parkingSessionDao().getActiveSessionByVehicleNumber(clean)
+                }
+
+                if (session == null) {
+                    val searchResults = database.parkingSessionDao().searchSessions(clean)
+                    session = searchResults.firstOrNull { it.status == "PARKED" }
+                }
+
+                withContext(Dispatchers.Main) {
+                    isSearching = false
+                    if (session != null) {
+                        val exitTimeEpoch = System.currentTimeMillis()
+                        val durationMinutes = tariffEngine.calculateDuration(session.entryTime, exitTimeEpoch)
+                        val durationFormatted = tariffEngine.formatDuration(durationMinutes)
+
+                        val timeFormat = SimpleDateFormat("hh:mm a", Locale.getDefault())
+                        val entryTimeFormatted = timeFormat.format(Date(session.entryTime))
+                        val exitTimeFormatted = timeFormat.format(Date(exitTimeEpoch))
+
+                        // Check if vehicle has an active membership pass
+                        coroutineScope.launch(Dispatchers.IO) {
+                            val activeMember = database.membershipDao().getActiveMembershipForVehicle(session.vehicleNumber, exitTimeEpoch)
+
+                            // Default tariff configuration
+                            val isBike = session.vehicleTypeId == "MOTORCYCLE"
+                            val defaultTariff = TariffConfig(
+                                id = if (isBike) "bike_tariff" else "car_tariff",
+                                name = if (isBike) "Motorcycle Tariff" else "Car Tariff",
+                                vehicleTypeId = session.vehicleTypeId,
+                                gracePeriodMinutes = 10,
+                                minCharge = if (isBike) BigDecimal("25.00") else BigDecimal("40.00"),
+                                maxDailyCharge = if (isBike) BigDecimal("200.00") else BigDecimal("500.00"),
+                                tiers = listOf(
+                                    TariffTier(0, 60, if (isBike) BigDecimal("25.00") else BigDecimal("50.00"), isFixed = true),
+                                    TariffTier(60, 120, if (isBike) BigDecimal("40.00") else BigDecimal("80.00"), isFixed = true),
+                                    TariffTier(120, null, if (isBike) BigDecimal("15.00") else BigDecimal("30.00"), isFixed = false)
+                                )
+                            )
+
+                            val calcResult = tariffEngine.calculateFee(
+                                durationMinutes = durationMinutes,
+                                tariffConfig = defaultTariff,
+                                isLostTicket = false,
+                                memberDiscountPercent = activeMember?.discountPercent,
+                                memberInfo = activeMember?.let { "${it.planType} Pass" }
+                            )
+
+                            withContext(Dispatchers.Main) {
+                                vehicleFound = ExitVehicleInfo(
+                                    sessionId = session.id,
+                                    ticketNumber = session.ticketNumber,
+                                    vehicleNumber = session.vehicleNumber,
+                                    vehicleType = session.vehicleTypeId,
+                                    entryTimeMillis = session.entryTime,
+                                    entryTime = entryTimeFormatted,
+                                    exitTime = exitTimeFormatted,
+                                    duration = durationFormatted,
+                                    durationMinutes = durationMinutes,
+                                    parkingFee = calcResult.grossAmount.toPlainString(),
+                                    discount = calcResult.discountAmount.toPlainString(),
+                                    totalPaid = calcResult.netAmount.toPlainString(),
+                                    membership = activeMember
+                                )
+                                if (activeMember != null) {
+                                    selectedPayment = "VIP_PASS"
+                                }
+                            }
+                        }
+                    } else {
+                        searchError = "No currently parked vehicle found matching \"$clean\"."
+                    }
+                }
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Vehicle Exit", fontWeight = FontWeight.Bold) },
+                title = { Text("Vehicle Exit & Billing", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Back")
@@ -50,147 +179,234 @@ fun VehicleExitScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(16.dp)
+                .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 1. Scan or Manual Entry Mode
+            Spacer(modifier = Modifier.height(2.dp))
+
             if (vehicleFound == null) {
-                ScanTicketSection(
-                    onScanClick = {
-                        // Trigger SUNMI hardware scanner
-                        // Simulating found vehicle
-                        vehicleFound = ExitVehicleInfo(
-                            ticketNumber = "SP-20260913-001245",
-                            vehicleNumber = "BA 12 PA 1234",
-                            vehicleType = "CAR",
-                            entryTime = "09:42 AM",
-                            exitTime = "12:00 PM",
-                            duration = "2h 18m",
-                            parkingFee = "120.00",
-                            discount = "0.00"
-                        )
-                    },
-                    onManualSearch = { query ->
-                        // Search by vehicle number
-                    }
-                )
-            } else {
-                // 2. Vehicle Found - Show Details
-                VehicleExitDetails(vehicle = vehicleFound!!)
-
-                // 3. Payment Method Selection
-                PaymentMethodSection(
-                    selectedMethod = selectedPayment,
-                    onMethodSelected = { selectedPayment = it }
-                )
-
-                Spacer(modifier = Modifier.weight(1f))
-
-                // 4. Complete Exit & Print Receipt
-                Button(
-                    onClick = {
-                        onProcessExit(vehicleFound!!.ticketNumber, selectedPayment)
-                        navController.popBackStack()
-                    },
+                // 1. Scan Ticket / QR Section
+                Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(60.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen)
+                        .clickable {
+                            // If hardware scanner or camera triggers, simulate demo vehicle BA 12 PA 1234
+                            lookupVehicle("BA 12 PA 1234")
+                        },
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = PrimaryBlue.copy(alpha = 0.1f))
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(24.dp),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text(text = "✓", fontSize = 24.sp)
+                        Icon(
+                            imageVector = Icons.Default.QrCodeScanner,
+                            contentDescription = "Scan QR",
+                            modifier = Modifier.size(56.dp),
+                            tint = PrimaryBlue
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
                         Text(
-                            text = "COMPLETE EXIT & PRINT",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontSize = 16.sp
+                            text = "Scan Ticket QR Code",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = PrimaryBlue
+                        )
+                        Text(
+                            text = "SUNMI hardware scanner active | Tap to test",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                // 2. Manual Search Box
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Or Search Vehicle Number / Ticket",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it.uppercase() },
+                            modifier = Modifier.weight(1f),
+                            placeholder = { Text("e.g. BA 12 PA 1234 or SP-...") },
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+
+                        Button(
+                            onClick = { lookupVehicle(searchQuery) },
+                            modifier = Modifier.height(56.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            enabled = searchQuery.isNotBlank() && !isSearching
+                        ) {
+                            if (isSearching) {
+                                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp))
+                            } else {
+                                Icon(Icons.Default.Search, contentDescription = "Search")
+                            }
+                        }
+                    }
+
+                    searchError?.let { err ->
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = ErrorRed.copy(alpha = 0.12f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = err,
+                                modifier = Modifier.padding(10.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = ErrorRed
+                            )
+                        }
+                    }
+                }
+            } else {
+                // Vehicle Found Display
+                val vehicle = vehicleFound!!
+
+                // VIP Member Pass Highlight
+                vehicle.membership?.let { member ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        color = SuccessGreen.copy(alpha = 0.12f),
+                        border = CardDefaults.outlinedCardBorder()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(Icons.Default.Star, contentDescription = null, tint = SuccessGreen)
+                            Column {
+                                Text(
+                                    text = "VIP MEMBER PASS APPLIED",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = SuccessGreen,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "${member.fullName} - ${member.planType.replace("_", " ")}",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "100% Free Parking Exit Waived",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = SuccessGreen
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Vehicle Details Card
+                VehicleExitDetailsCard(vehicle = vehicle)
+
+                // Payment Method Selector
+                PaymentMethodSection(
+                    selectedMethod = selectedPayment,
+                    isMemberPass = vehicle.membership != null,
+                    onMethodSelected = { selectedPayment = it }
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { vehicleFound = null },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(56.dp),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("CANCEL")
+                    }
+
+                    Button(
+                        onClick = {
+                            isCompleting = true
+                            coroutineScope.launch {
+                                withContext(Dispatchers.IO) {
+                                    val session = database.parkingSessionDao().getSessionById(vehicle.sessionId)
+                                    session?.let { s ->
+                                        val updated = s.copy(
+                                            status = "EXITED",
+                                            exitTime = System.currentTimeMillis(),
+                                            durationMinutes = vehicle.durationMinutes.toInt(),
+                                            grossAmount = vehicle.parkingFee,
+                                            discountAmount = vehicle.discount,
+                                            netAmount = vehicle.totalPaid,
+                                            paymentStatus = if (vehicle.totalPaid == "0.00") "WAIVED" else "PAID",
+                                            paymentMethod = selectedPayment,
+                                            updatedAt = System.currentTimeMillis()
+                                        )
+                                        database.parkingSessionDao().updateSession(updated)
+                                    }
+                                }
+
+                                onProcessExit(vehicle.ticketNumber, selectedPayment)
+
+                                withContext(Dispatchers.Main) {
+                                    isCompleting = false
+                                    Toast.makeText(context, "Exit Complete & Receipt Printed!", Toast.LENGTH_SHORT).show()
+                                    navController.popBackStack()
+                                }
+                            }
+                        },
+                        enabled = !isCompleting,
+                        modifier = Modifier
+                            .weight(2f)
+                            .height(56.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (vehicle.membership != null) PrimaryBlue else SuccessGreen
+                        )
+                    ) {
+                        if (isCompleting) {
+                            CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
+                        } else {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null)
+                                Text(
+                                    text = if (vehicle.membership != null) "PASS EXIT & RECEIPT" else "PAY & PRINT RECEIPT",
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
             }
+
+            Spacer(modifier = Modifier.height(24.dp))
         }
     }
 }
 
 @Composable
-fun ScanTicketSection(
-    onScanClick: () -> Unit,
-    onManualSearch: (String) -> Unit
-) {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        // Large Scan Button
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(180.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = PrimaryBlue.copy(alpha = 0.1f))
-        ) {
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Icon(
-                    imageVector = Icons.Default.QrCodeScanner,
-                    contentDescription = "Scan QR",
-                    modifier = Modifier.size(64.dp),
-                    tint = PrimaryBlue
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = "Scan Ticket QR Code",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = PrimaryBlue
-                )
-                Text(
-                    text = "Hardware scanner ready",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-
-        Button(
-            onClick = onScanClick,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp),
-            shape = RoundedCornerShape(12.dp)
-        ) {
-            Text("SCAN TICKET", style = MaterialTheme.typography.labelLarge)
-        }
-
-        HorizontalDivider()
-
-        Text(
-            text = "Or search manually",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-
-        OutlinedTextField(
-            value = "",
-            onValueChange = { onManualSearch(it) },
-            modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("Enter Vehicle Number or Ticket") },
-            singleLine = true,
-            shape = RoundedCornerShape(12.dp)
-        )
-    }
-}
-
-@Composable
-fun VehicleExitDetails(vehicle: ExitVehicleInfo) {
+fun VehicleExitDetailsCard(vehicle: ExitVehicleInfo) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -198,10 +414,11 @@ fun VehicleExitDetails(vehicle: ExitVehicleInfo) {
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Vehicle Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -214,74 +431,85 @@ fun VehicleExitDetails(vehicle: ExitVehicleInfo) {
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "${vehicle.vehicleType} • ${vehicle.ticketNumber}",
-                        style = MaterialTheme.typography.bodyMedium,
+                        text = "Ticket: ${vehicle.ticketNumber}",
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(StatusParked.copy(alpha = 0.15f)),
-                    contentAlignment = Alignment.Center
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = PrimaryBlue.copy(alpha = 0.15f)
                 ) {
-                    Text(text = "🚗", fontSize = 24.sp)
+                    Text(
+                        text = vehicle.vehicleType,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = PrimaryBlue,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
 
             HorizontalDivider()
 
-            // Parking Duration
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Column {
-                    Text("Entry", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(vehicle.entryTime, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                    Text(text = "Entry Time", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                    Text(text = vehicle.entryTime, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                 }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Duration", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(vehicle.duration, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = PrimaryBlue)
+                Column {
+                    Text(text = "Exit Time", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                    Text(text = vehicle.exitTime, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                 }
-                Column(horizontalAlignment = Alignment.End) {
-                    Text("Exit", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(vehicle.exitTime, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                Column {
+                    Text(text = "Duration", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                    Text(text = vehicle.duration, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = PrimaryBlue)
                 }
             }
 
             HorizontalDivider()
 
-            // Fee Breakdown
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Financial Breakdown
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(text = "Gross Parking Fee", style = MaterialTheme.typography.bodyMedium)
+                Text(text = "NPR ${vehicle.parkingFee}", style = MaterialTheme.typography.bodyMedium)
+            }
+
+            if (vehicle.discount != "0.00") {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text("Parking Fee", style = MaterialTheme.typography.bodyMedium)
-                    Text("NPR ${vehicle.parkingFee}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                    Text(text = "Member Discount", style = MaterialTheme.typography.bodyMedium, color = SuccessGreen)
+                    Text(text = "- NPR ${vehicle.discount}", style = MaterialTheme.typography.bodyMedium, color = SuccessGreen, fontWeight = FontWeight.Bold)
                 }
-                if (vehicle.discount != "0.00") {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Discount", style = MaterialTheme.typography.bodyMedium, color = SuccessGreen)
-                        Text("-NPR ${vehicle.discount}", style = MaterialTheme.typography.bodyMedium, color = SuccessGreen)
-                    }
-                }
-                HorizontalDivider()
+            }
+
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("TOTAL PAYABLE", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(text = "TOTAL DUE", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Text(
-                        "NPR ${vehicle.parkingFee}",
-                        style = MaterialTheme.typography.titleLarge,
+                        text = "NPR ${vehicle.totalPaid}",
                         fontWeight = FontWeight.Bold,
-                        color = PrimaryBlue
+                        fontSize = 20.sp,
+                        color = if (vehicle.totalPaid == "0.00") SuccessGreen else PrimaryBlue
                     )
                 }
             }
@@ -292,86 +520,34 @@ fun VehicleExitDetails(vehicle: ExitVehicleInfo) {
 @Composable
 fun PaymentMethodSection(
     selectedMethod: String,
+    isMemberPass: Boolean,
     onMethodSelected: (String) -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             text = "Payment Method",
-            style = MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold
         )
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            paymentMethods.forEach { method ->
-                PaymentMethodChip(
-                    modifier = Modifier.weight(1f),
-                    method = method,
-                    isSelected = selectedMethod == method.id,
-                    onSelect = { onMethodSelected(method.id) }
+            val methods = if (isMemberPass) {
+                listOf("VIP_PASS" to "👑 Member Pass", "CASH" to "💵 Cash")
+            } else {
+                listOf("CASH" to "💵 Cash", "QR_ONLINE" to "📱 QR / Fonepay", "CARD" to "💳 Card")
+            }
+
+            methods.forEach { (methodId, label) ->
+                FilterChip(
+                    selected = selectedMethod == methodId,
+                    onClick = { onMethodSelected(methodId) },
+                    label = { Text(label, fontWeight = if (selectedMethod == methodId) FontWeight.Bold else FontWeight.Normal) },
+                    modifier = Modifier.weight(1f)
                 )
             }
         }
     }
 }
-
-@Composable
-fun PaymentMethodChip(
-    modifier: Modifier = Modifier,
-    method: PaymentMethod,
-    isSelected: Boolean,
-    onSelect: () -> Unit
-) {
-    Card(
-        modifier = modifier
-            .height(72.dp),
-        onClick = onSelect,
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) PrimaryBlue else MaterialTheme.colorScheme.surface
-        ),
-        border = if (isSelected) null else CardDefaults.outlinedCardBorder()
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text(text = method.icon, fontSize = 24.sp)
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = method.label,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
-            )
-        }
-    }
-}
-
-data class ExitVehicleInfo(
-    val ticketNumber: String,
-    val vehicleNumber: String,
-    val vehicleType: String,
-    val entryTime: String,
-    val exitTime: String,
-    val duration: String,
-    val parkingFee: String,
-    val discount: String
-)
-
-data class PaymentMethod(
-    val id: String,
-    val label: String,
-    val icon: String
-)
-
-val paymentMethods = listOf(
-    PaymentMethod("CASH", "Cash", "💵"),
-    PaymentMethod("QR", "QR Pay", "📱"),
-    PaymentMethod("CARD", "Card", "💳")
-)

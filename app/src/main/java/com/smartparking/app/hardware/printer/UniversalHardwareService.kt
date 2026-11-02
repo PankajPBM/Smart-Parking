@@ -116,6 +116,41 @@ class UniversalHardwareService(private val context: Context) {
         }
     }
 
+    /**
+     * Executes automatic membership card/pass printing
+     */
+    fun autoPrintMembershipPass(
+        siteName: String,
+        memberNo: String,
+        memberName: String,
+        phone: String,
+        vehicleNo: String,
+        vehicleType: String,
+        planType: String,
+        validFrom: String,
+        validUntil: String,
+        amountPaid: String,
+        operatorName: String,
+        onResult: (PrintResult) -> Unit = {}
+    ) {
+        scope.launch {
+            val result = printer.printMembershipPass(
+                siteName = siteName,
+                memberNo = memberNo,
+                memberName = memberName,
+                phone = phone,
+                vehicleNo = vehicleNo,
+                vehicleType = vehicleType,
+                planType = planType,
+                validFrom = validFrom,
+                validUntil = validUntil,
+                amountPaid = amountPaid,
+                operatorName = operatorName
+            )
+            onResult(result)
+        }
+    }
+
     companion object {
         @Volatile
         private var INSTANCE: UniversalHardwareService? = null
@@ -144,6 +179,12 @@ class NoOpPrinter : ParkingPrinter {
         vehicleType: String, entryTime: String, exitTime: String, duration: String,
         parkingFee: String, discount: String, totalPaid: String, paymentMethod: String,
         operatorName: String
+    ): PrintResult = PrintResult.PrinterUnavailable
+
+    override suspend fun printMembershipPass(
+        siteName: String, memberNo: String, memberName: String, phone: String,
+        vehicleNo: String, vehicleType: String, planType: String, validFrom: String,
+        validUntil: String, amountPaid: String, operatorName: String
     ): PrintResult = PrintResult.PrinterUnavailable
 
     override suspend fun getPrinterStatus(): PrintResult = PrintResult.PrinterUnavailable

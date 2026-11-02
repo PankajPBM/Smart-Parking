@@ -394,3 +394,67 @@ data class SyncQueueEntity(
     @ColumnInfo(name = "last_error")
     val lastError: String? = null
 )
+
+/**
+ * Memberships & Subscriptions (Monthly, Annual, VIP Passes)
+ */
+@Entity(
+    tableName = "memberships",
+    indices = [
+        Index(value = ["member_number"], unique = true),
+        Index(value = ["vehicle_number"]),
+        Index(value = ["phone"]),
+        Index(value = ["is_active"]),
+        Index(value = ["end_date"])
+    ]
+)
+data class MembershipEntity(
+    @PrimaryKey
+    val id: String,
+
+    @ColumnInfo(name = "member_number")
+    val memberNumber: String,
+
+    @ColumnInfo(name = "full_name")
+    val fullName: String,
+
+    @ColumnInfo(name = "phone")
+    val phone: String,
+
+    @ColumnInfo(name = "vehicle_number")
+    val vehicleNumber: String,
+
+    @ColumnInfo(name = "vehicle_type_id")
+    val vehicleTypeId: String = "CAR",
+
+    @ColumnInfo(name = "plan_type")
+    val planType: String = "MONTHLY", // "MONTHLY", "QUARTERLY", "HALF_YEARLY", "ANNUAL", "VIP_PASS"
+
+    @ColumnInfo(name = "start_date")
+    val startDate: Long = System.currentTimeMillis(),
+
+    @ColumnInfo(name = "end_date")
+    val endDate: Long,
+
+    @ColumnInfo(name = "discount_percent")
+    val discountPercent: Int = 100, // 100 = 100% free parking
+
+    @ColumnInfo(name = "fee_paid")
+    val feePaid: String = "0.00",
+
+    @ColumnInfo(name = "payment_method")
+    val paymentMethod: String = "CASH",
+
+    @ColumnInfo(name = "is_active")
+    val isActive: Boolean = true,
+
+    @ColumnInfo(name = "notes")
+    val notes: String? = null,
+
+    @ColumnInfo(name = "created_at")
+    val createdAt: Long = System.currentTimeMillis(),
+
+    @ColumnInfo(name = "updated_at")
+    val updatedAt: Long = System.currentTimeMillis()
+)
+

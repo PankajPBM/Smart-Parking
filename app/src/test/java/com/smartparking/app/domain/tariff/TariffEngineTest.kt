@@ -126,4 +126,33 @@ class TariffEngineTest {
         assertEquals("3h", tariffEngine.formatDuration(180))
         assertEquals("45m", tariffEngine.formatDuration(45))
     }
+
+    @Test
+    fun `membership free pass test - 100 percent discount`() {
+        val result = tariffEngine.calculateFee(
+            durationMinutes = 90, // Normally 130
+            tariffConfig = sampleCarTariff,
+            memberDiscountPercent = 100,
+            memberInfo = "VIP Pass"
+        )
+
+        assertEquals(BigDecimal("130.00"), result.grossAmount)
+        assertEquals(BigDecimal("130.00"), result.discountAmount)
+        assertEquals(BigDecimal("0.00"), result.netAmount)
+        assertTrue(result.breakdown.contains("Member Pass Discount -100%"))
+    }
+
+    @Test
+    fun `membership partial discount test - 50 percent discount`() {
+        val result = tariffEngine.calculateFee(
+            durationMinutes = 45, // Normally 50.00
+            tariffConfig = sampleCarTariff,
+            memberDiscountPercent = 50,
+            memberInfo = "Employee Pass"
+        )
+
+        assertEquals(BigDecimal("50.00"), result.grossAmount)
+        assertEquals(BigDecimal("25.00"), result.discountAmount)
+        assertEquals(BigDecimal("25.00"), result.netAmount)
+    }
 }

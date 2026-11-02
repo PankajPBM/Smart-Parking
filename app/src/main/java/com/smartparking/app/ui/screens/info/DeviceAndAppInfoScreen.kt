@@ -77,7 +77,25 @@ fun DeviceAndAppInfoScreen(
                 onOpenWhatsApp = { openWhatsApp(context, appMetadata.whatsappNumber) }
             )
 
-            // 4. Test Hardware Button
+            // 4. Manage License Button
+            Button(
+                onClick = { navController.navigate("license") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = AmberWarning)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("🔑", fontSize = 20.sp)
+                    Text("MANAGE LICENSE & TRIAL", style = MaterialTheme.typography.labelLarge, color = Color.White)
+                }
+            }
+
+            // 5. Test Hardware Button
             Button(
                 onClick = onTestPrinter,
                 modifier = Modifier

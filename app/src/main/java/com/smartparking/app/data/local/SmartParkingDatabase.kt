@@ -23,9 +23,10 @@ import java.util.UUID
         UserEntity::class,
         ParkingSessionEntity::class,
         AuditLogEntity::class,
-        SyncQueueEntity::class
+        SyncQueueEntity::class,
+        MembershipEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class SmartParkingDatabase : RoomDatabase() {
@@ -36,6 +37,7 @@ abstract class SmartParkingDatabase : RoomDatabase() {
     abstract fun userDao(): UserDao
     abstract fun syncQueueDao(): SyncQueueDao
     abstract fun auditLogDao(): AuditLogDao
+    abstract fun membershipDao(): MembershipDao
 
     companion object {
         @Volatile
@@ -159,6 +161,26 @@ abstract class SmartParkingDatabase : RoomDatabase() {
                         fullName = "Main Gate Operator",
                         pinHash = "1234",
                         role = "OPERATOR"
+                    )
+                )
+
+                // 5. Default VIP Member Pass (for out-of-the-box testing)
+                val oneYearFromNow = System.currentTimeMillis() + (365L * 24 * 60 * 60 * 1000L)
+                db.membershipDao().insertMembership(
+                    MembershipEntity(
+                        id = UUID.randomUUID().toString(),
+                        memberNumber = "MEM-2026-0001",
+                        fullName = "Pankaj Sharma",
+                        phone = "9814891277",
+                        vehicleNumber = "BA 12 PA 1234",
+                        vehicleTypeId = "CAR",
+                        planType = "VIP_PASS",
+                        startDate = System.currentTimeMillis(),
+                        endDate = oneYearFromNow,
+                        discountPercent = 100,
+                        feePaid = "12000.00",
+                        paymentMethod = "QR_ONLINE",
+                        notes = "Executive VIP Pass - PB Tech Zone"
                     )
                 )
             }
