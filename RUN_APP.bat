@@ -1,9 +1,20 @@
 @echo off
+setlocal enabledelayedexpansion
+
 echo ===================================================
 echo     SMART PARKING - ONE-CLICK BUILD ^& INSTALL
 echo           PB Tech Zone (SUNMI POS POS)
 echo ===================================================
 echo.
+
+if "%JAVA_HOME%"=="" (
+    if exist "C:\Users\Bivek\.antigravity\extensions\redhat.java-1.54.0-win32-x64\jre\21.0.10-win32-x86_64" (
+        set "JAVA_HOME=C:\Users\Bivek\.antigravity\extensions\redhat.java-1.54.0-win32-x64\jre\21.0.10-win32-x86_64"
+    ) else if exist "C:\Program Files\Android\Android Studio\jbr" (
+        set "JAVA_HOME=C:\Program Files\Android\Android Studio\jbr"
+    )
+)
+
 echo [1/3] Checking connected SUNMI / Android devices...
 adb devices
 echo.
