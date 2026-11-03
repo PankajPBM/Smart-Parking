@@ -26,6 +26,7 @@ import androidx.navigation.NavController
 import com.smartparking.app.data.local.SmartParkingDatabase
 import com.smartparking.app.data.local.entity.MembershipEntity
 import com.smartparking.app.data.local.entity.ParkingSessionEntity
+import com.smartparking.app.domain.settings.PosSettingsRepository
 import com.smartparking.app.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -44,14 +45,37 @@ fun VehicleEntryScreen(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val database = remember { SmartParkingDatabase.getInstance(context) }
+    val posSettingsRepo = remember { PosSettingsRepository.getInstance(context) }
+
+    val enabledVehicleIds = remember { posSettingsRepo.getEnabledVehicleTypes() }
+    val activeVehicleTypes = remember(enabledVehicleIds) {
+        val all = listOf(
+            VehicleTypeOption("CAR", "Car", "🚗"),
+            VehicleTypeOption("MOTORCYCLE", "Bike", "🏍"),
+            VehicleTypeOption("VAN", "Van", "🚐"),
+            VehicleTypeOption("BUS", "Bus", "🚌"),
+            VehicleTypeOption("TRUCK", "Truck", "🚚")
+        )
+        val filtered = all.filter { enabledVehicleIds.contains(it.id) }
+        if (filtered.isEmpty()) all.take(2) else filtered
+    }
 
     var plateNumber by remember { mutableStateOf("") }
-    var selectedVehicleType by remember { mutableStateOf("CAR") }
+    var selectedVehicleType by remember {
+        mutableStateOf(activeVehicleTypes.firstOrNull { it.id == "CAR" }?.id ?: activeVehicleTypes.first().id)
+    }
     var selectedZone by remember { mutableStateOf("Ground Floor - A") }
     var customerPhone by remember { mutableStateOf("") }
     var isPrinting by remember { mutableStateOf(false) }
 
     var matchedMember by remember { mutableStateOf<MembershipEntity?>(null) }
+
+    // Ensure selected vehicle type is valid among enabled ones
+    LaunchedEffect(activeVehicleTypes) {
+        if (activeVehicleTypes.none { it.id == selectedVehicleType }) {
+            selectedVehicleType = activeVehicleTypes.first().id
+        }
+    }
 
     // Real-time lookup for active membership whenever plate number is entered
     LaunchedEffect(plateNumber) {
@@ -198,17 +222,24 @@ fun VehicleEntryScreen(
                     fontWeight = FontWeight.SemiBold
                 )
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    vehicleTypes.forEach { type ->
-                        VehicleTypeCard(
-                            modifier = Modifier.weight(1f),
-                            type = type,
-                            isSelected = selectedVehicleType == type.id,
-                            onSelect = { selectedVehicleType = type.id }
-                        )
+                val chunkedVehicles = remember(activeVehicleTypes) {
+                    if (activeVehicleTypes.size <= 4) listOf(activeVehicleTypes) else activeVehicleTypes.chunked(3)
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    chunkedVehicles.forEach { rowTypes ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            rowTypes.forEach { type ->
+                                VehicleTypeCard(
+                                    modifier = Modifier.weight(1f),
+                                    type = type,
+                                    isSelected = selectedVehicleType == type.id,
+                                    onSelect = { selectedVehicleType = type.id }
+                                )
+                            }
+                        }
                     }
                 }
             }

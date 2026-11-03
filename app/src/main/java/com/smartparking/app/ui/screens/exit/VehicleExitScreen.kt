@@ -1,7 +1,9 @@
 package com.smartparking.app.ui.screens.exit
 
 import android.widget.Toast
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -19,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -27,6 +30,7 @@ import androidx.navigation.NavController
 import com.smartparking.app.data.local.SmartParkingDatabase
 import com.smartparking.app.data.local.entity.MembershipEntity
 import com.smartparking.app.data.local.entity.ParkingSessionEntity
+import com.smartparking.app.domain.settings.PosSettingsRepository
 import com.smartparking.app.domain.tariff.TariffConfig
 import com.smartparking.app.domain.tariff.TariffEngine
 import com.smartparking.app.domain.tariff.TariffRepository
@@ -66,13 +70,25 @@ fun VehicleExitScreen(
     val coroutineScope = rememberCoroutineScope()
     val database = remember { SmartParkingDatabase.getInstance(context) }
     val tariffEngine = remember { TariffEngine() }
+    val posSettingsRepo = remember { PosSettingsRepository.getInstance(context) }
+    val enabledPaymentMethods = remember { posSettingsRepo.getEnabledPaymentMethods() }
 
     var searchQuery by remember { mutableStateOf("") }
     var vehicleFound by remember { mutableStateOf<ExitVehicleInfo?>(null) }
-    var selectedPayment by remember { mutableStateOf("CASH") }
+    var selectedPayment by remember {
+        mutableStateOf(enabledPaymentMethods.firstOrNull { it != "VIP_PASS" } ?: "CASH")
+    }
     var isSearching by remember { mutableStateOf(false) }
     var isCompleting by remember { mutableStateOf(false) }
     var searchError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(enabledPaymentMethods, vehicleFound) {
+        if (vehicleFound?.membership != null) {
+            selectedPayment = "VIP_PASS"
+        } else if (!enabledPaymentMethods.contains(selectedPayment)) {
+            selectedPayment = enabledPaymentMethods.firstOrNull { it != "VIP_PASS" } ?: "CASH"
+        }
+    }
 
     fun lookupVehicle(queryStr: String) {
         val clean = queryStr.trim().uppercase(Locale.US)
@@ -313,8 +329,82 @@ fun VehicleExitScreen(
                 PaymentMethodSection(
                     selectedMethod = selectedPayment,
                     isMemberPass = vehicle.membership != null,
+                    enabledMethods = enabledPaymentMethods,
                     onMethodSelected = { selectedPayment = it }
                 )
+
+                // QR Display Card (Shown when QR / Online Payment is selected)
+                if (selectedPayment == "QR_ONLINE") {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                        ),
+                        shape = RoundedCornerShape(16.dp),
+                        border = CardDefaults.outlinedCardBorder()
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "📱 Scan to Pay NPR ${vehicle.totalPaid}",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+
+                            val qrBitmap = remember { posSettingsRepo.getQrBitmap() }
+                            if (qrBitmap != null) {
+                                Image(
+                                    bitmap = qrBitmap.asImageBitmap(),
+                                    contentDescription = "Merchant Payment QR",
+                                    modifier = Modifier
+                                        .size(190.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color.White)
+                                        .padding(8.dp)
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .size(160.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color.White)
+                                        .border(1.dp, Color.LightGray, RoundedCornerShape(8.dp)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.QrCodeScanner,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(54.dp),
+                                            tint = PrimaryBlue
+                                        )
+                                        Text(
+                                            text = "Upload QR Photo in Portal",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Color.DarkGray
+                                        )
+                                    }
+                                }
+                            }
+
+                            val qrNote = remember { posSettingsRepo.getQrNote() }
+                            Text(
+                                text = qrNote,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -509,6 +599,7 @@ fun VehicleExitDetailsCard(vehicle: ExitVehicleInfo) {
 fun PaymentMethodSection(
     selectedMethod: String,
     isMemberPass: Boolean,
+    enabledMethods: List<String>,
     onMethodSelected: (String) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -522,13 +613,17 @@ fun PaymentMethodSection(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            val methods = if (isMemberPass) {
+            val allMethods = if (isMemberPass) {
                 listOf("VIP_PASS" to "👑 Member Pass", "CASH" to "💵 Cash")
             } else {
                 listOf("CASH" to "💵 Cash", "QR_ONLINE" to "📱 QR / Fonepay", "CARD" to "💳 Card")
             }
 
-            methods.forEach { (methodId, label) ->
+            val activeMethods = allMethods.filter { (id, _) ->
+                enabledMethods.contains(id) || (isMemberPass && id == "VIP_PASS")
+            }.ifEmpty { listOf("CASH" to "💵 Cash") }
+
+            activeMethods.forEach { (methodId, label) ->
                 FilterChip(
                     selected = selectedMethod == methodId,
                     onClick = { onMethodSelected(methodId) },

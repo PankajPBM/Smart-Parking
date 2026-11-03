@@ -149,6 +149,12 @@ class ParkingSyncService(private val context: Context) {
                 }
             }
 
+            // 3. Update POS Settings & Payments
+            val settingsObj = json.optJSONObject("settings")
+            if (settingsObj != null) {
+                com.smartparking.app.domain.settings.PosSettingsRepository.getInstance(context).saveSettings(settingsObj)
+            }
+
             SyncResult(
                 success = true,
                 message = "Cloud Sync complete! Rates & VIP passes updated.",
