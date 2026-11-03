@@ -67,6 +67,13 @@ object SecurityGuard {
             return SecurityStatus(isTampered = true, violationReason = hookReason)
         }
 
+        // 4. Root / Magisk / Su Binary Detection
+        val rootReason = detectRootAccess()
+        if (rootReason != null && !com.smartparking.app.BuildConfig.DEBUG) {
+            if (enforceHardExit) killProcess(rootReason)
+            return SecurityStatus(isTampered = true, violationReason = rootReason)
+        }
+
         return SecurityStatus(isTampered = false)
     }
 
@@ -159,6 +166,38 @@ object SecurityGuard {
                     return "Active instrumentation server detected on port $port"
                 }
             } catch (_: Exception) {}
+        }
+
+        return null
+    }
+
+    /**
+     * Detects rooted devices, Magisk, and unauthorized su binaries.
+     */
+    private fun detectRootAccess(): String? {
+        val suPaths = arrayOf(
+            "/system/bin/su",
+            "/system/xbin/su",
+            "/sbin/su",
+            "/system/sd/xbin/su",
+            "/system/bin/failsafe/su",
+            "/data/local/xbin/su",
+            "/data/local/bin/su",
+            "/data/local/su",
+            "/data/adb/magisk"
+        )
+        for (path in suPaths) {
+            try {
+                if (File(path).exists()) {
+                    return "Root privilege binary detected at: $path"
+                }
+            } catch (_: Exception) {}
+        }
+
+        // Check build tags for test-keys
+        val tags = Build.TAGS
+        if (tags != null && tags.contains("test-keys")) {
+            return "Test-keys custom rooted ROM detected"
         }
 
         return null

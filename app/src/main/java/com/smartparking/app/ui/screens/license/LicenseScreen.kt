@@ -307,7 +307,7 @@ fun LicenseStatusCard(licenseState: PbLicenseService.LicenseState) {
                     Text(
                         text = when (licenseState) {
                             is PbLicenseService.LicenseState.ProActive -> "👑 PRO LICENSE ACTIVE"
-                            is PbLicenseService.LicenseState.TrialActive -> "⏳ 1-YEAR FREE TRIAL"
+                            is PbLicenseService.LicenseState.TrialActive -> "⏳ 7-DAY FREE TRIAL"
                             is PbLicenseService.LicenseState.Expired -> "🔴 LICENSE EXPIRED"
                         },
                         style = MaterialTheme.typography.titleMedium,
@@ -585,8 +585,8 @@ fun PbLicenseRegistryCard(
                 is PbLicenseService.LicenseState.TrialActive -> {
                     RegistryDetailRowWithCopy(
                         label = "LICENSE KEY",
-                        value = "TRIAL-1YEAR-AUTO",
-                        onCopy = { onCopy("License Key", "TRIAL-1YEAR-AUTO") }
+                        value = "TRIAL-7DAYS-AUTO",
+                        onCopy = { onCopy("License Key", "TRIAL-7DAYS-AUTO") }
                     )
                     RegistryDetailRow(label = "CUSTOMER NAME", value = "Local POS Operator")
                     RegistryDetailRowWithCopy(

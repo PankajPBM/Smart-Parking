@@ -13,7 +13,7 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Manages the persistent 1-Year Trial for Smart Parking.
+ * Manages the persistent 7-Day Free Trial for Smart Parking.
  * Guarantees that across multiple app uninstalls and reinstalls, the original trial
  * start date and expiry date are preserved without resetting.
  */
@@ -23,7 +23,7 @@ class PersistentTrialManager(private val context: Context) {
         context.getSharedPreferences("pb_sp_trial_vault", Context.MODE_PRIVATE)
 
     companion object {
-        const val TRIAL_DURATION_DAYS = 365L
+        const val TRIAL_DURATION_DAYS = 7L
         private const val TRIAL_DURATION_MILLIS = TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000L
         private const val HMAC_KEY_SEED = "PB-TECH-ZONE-SMART-PARKING-TRIAL-V2026"
 
@@ -43,7 +43,7 @@ class PersistentTrialManager(private val context: Context) {
         val daysRemaining: Int,
         val startDateFormatted: String,
         val expiryDateFormatted: String,
-        val totalDays: Int = 365
+        val totalDays: Int = 7
     )
 
     init {
@@ -103,9 +103,9 @@ class PersistentTrialManager(private val context: Context) {
             }
         }
 
-        // Clock rollback detection
+        // Clock rollback detection: strictly flag backwards time adjustment (>15 minutes or earlier than start)
         val lastClock = prefs.getLong(PREF_LAST_SEEN_CLOCK, now)
-        if (now < lastClock - (2 * 3600 * 1000L)) { // If clock jumped back by >2 hours
+        if (now < resolvedStart - (15 * 60 * 1000L) || now < lastClock - (15 * 60 * 1000L)) {
             prefs.edit().putBoolean(PREF_CLOCK_TAMPERED, true).apply()
         } else {
             prefs.edit().putLong(PREF_LAST_SEEN_CLOCK, now).apply()
@@ -119,11 +119,16 @@ class PersistentTrialManager(private val context: Context) {
         val now = System.currentTimeMillis()
         val startEpoch = prefs.getLong(PREF_TRIAL_START, now)
         val expiryEpoch = prefs.getLong(PREF_TRIAL_EXPIRY, now + TRIAL_DURATION_MILLIS)
-        val isClockTampered = prefs.getBoolean(PREF_CLOCK_TAMPERED, false)
+        var isClockTampered = prefs.getBoolean(PREF_CLOCK_TAMPERED, false)
+
+        if (now < startEpoch - (15 * 60 * 1000L)) {
+            isClockTampered = true
+            prefs.edit().putBoolean(PREF_CLOCK_TAMPERED, true).apply()
+        }
 
         val millisRemaining = expiryEpoch - now
-        val daysRemaining = if (millisRemaining > 0) {
-            ((millisRemaining + (24 * 3600 * 1000L - 1)) / (24 * 3600 * 1000L)).toInt().coerceAtMost(365)
+        val daysRemaining = if (millisRemaining > 0 && !isClockTampered) {
+            ((millisRemaining + (24 * 3600 * 1000L - 1)) / (24 * 3600 * 1000L)).toInt().coerceAtMost(7)
         } else {
             0
         }
@@ -139,7 +144,7 @@ class PersistentTrialManager(private val context: Context) {
             daysRemaining = daysRemaining,
             startDateFormatted = dateFormat.format(Date(startEpoch)),
             expiryDateFormatted = dateFormat.format(Date(expiryEpoch)),
-            totalDays = 365
+            totalDays = 7
         )
     }
 

@@ -141,6 +141,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Re-verify integrity on resume (detects debugger attachment or Frida hooks injected during pause)
+        com.smartparking.app.security.SecurityGuard.verifyAppIntegrity(this, enforceHardExit = true)
         if (::hardwareService.isInitialized) {
             hardwareService.bind(this)
         }

@@ -80,7 +80,7 @@ class PbLicenseService(private val context: Context) {
             val expiryDate: String,
             val startDate: String,
             val boundHardware: String = "",
-            val totalDays: Int = 365,
+            val totalDays: Int = 7,
             val productName: String = PRODUCT_NAME
         ) : LicenseState()
 
@@ -187,7 +187,7 @@ class PbLicenseService(private val context: Context) {
             val reason = if (trialStatus.isClockTampered) {
                 "System clock manipulation detected"
             } else {
-                "1-Year Trial period has completed"
+                "7-Day Trial period has completed"
             }
             LicenseState.Expired(
                 reason = reason,
