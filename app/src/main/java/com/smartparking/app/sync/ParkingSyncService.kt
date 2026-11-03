@@ -92,7 +92,8 @@ class ParkingSyncService(private val context: Context) {
                 put("licenseKey", licenseKey)
                 put("machineHash", machineHash)
                 put("deviceModel", "${Build.MANUFACTURER} ${Build.MODEL}")
-                put("appVersion", "1.0.0")
+                put("appVersion", com.smartparking.app.BuildConfig.VERSION_NAME)
+                put("appVersionCode", com.smartparking.app.BuildConfig.VERSION_CODE)
                 put("stats", statsObj)
             }
 

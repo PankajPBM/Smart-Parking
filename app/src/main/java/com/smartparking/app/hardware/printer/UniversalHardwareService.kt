@@ -151,6 +151,30 @@ class UniversalHardwareService(private val context: Context) {
         }
     }
 
+    fun bind(activityContext: Context) {
+        printer.bind(activityContext)
+    }
+
+    /**
+     * Triggers printer self-check hardware pattern (paper feed & diagnostics)
+     */
+    fun printSelfCheck(onResult: (PrintResult) -> Unit = {}) {
+        scope.launch {
+            val result = printer.printerSelfChecking()
+            onResult(result)
+        }
+    }
+
+    /**
+     * Sends direct raw ESC/POS binary stream to MCU bypassing Android typography
+     */
+    fun printEscPosSample(onResult: (PrintResult) -> Unit = {}) {
+        scope.launch {
+            val result = printer.printEscPosSample()
+            onResult(result)
+        }
+    }
+
     companion object {
         @Volatile
         private var INSTANCE: UniversalHardwareService? = null
@@ -169,6 +193,8 @@ class UniversalHardwareService(private val context: Context) {
  * Fallback no-op printer for non-printer hardware
  */
 class NoOpPrinter : ParkingPrinter {
+    override fun bind(context: Context) {}
+
     override suspend fun printEntryTicket(
         siteName: String, ticketNo: String, vehicleNo: String, vehicleType: String,
         entryTime: String, zoneName: String, operatorName: String, rateInfo: String
@@ -188,4 +214,8 @@ class NoOpPrinter : ParkingPrinter {
     ): PrintResult = PrintResult.PrinterUnavailable
 
     override suspend fun getPrinterStatus(): PrintResult = PrintResult.PrinterUnavailable
+
+    override suspend fun printerSelfChecking(): PrintResult = PrintResult.PrinterUnavailable
+
+    override suspend fun printEscPosSample(): PrintResult = PrintResult.PrinterUnavailable
 }

@@ -25,8 +25,11 @@ import com.smartparking.app.ui.screens.license.LicenseScreen
 import com.smartparking.app.ui.screens.membership.MembershipScreen
 import com.smartparking.app.ui.screens.reports.ReportsScreen
 import com.smartparking.app.ui.theme.SmartParkingTheme
+import com.smartparking.app.sync.ParkingSyncService
+import com.smartparking.app.version.AppVersionManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -43,11 +46,19 @@ class MainActivity : ComponentActivity() {
         com.smartparking.app.security.SecurityGuard.verifyAppIntegrity(this, enforceHardExit = true)
 
         hardwareService = UniversalHardwareService.getInstance(this)
+        hardwareService.bind(this)
         licenseService = PbLicenseService.getInstance(this)
 
-        // Asynchronously check heartbeat with PB License Authority in background
+        // Asynchronously check heartbeat, sync with cloud, and verify terminal version
         lifecycleScope.launch(Dispatchers.IO) {
             licenseService.sendHeartbeat()
+            ParkingSyncService.getInstance(this@MainActivity).syncWithCloud()
+            val updateResult = AppVersionManager.getInstance(this@MainActivity).checkForUpdates()
+            if (updateResult != null && updateResult.hasUpdate) {
+                withContext(Dispatchers.Main) {
+                    AppVersionManager.getInstance(this@MainActivity).showUpdateDialog(this@MainActivity, updateResult)
+                }
+            }
         }
 
         val capabilities = hardwareService.capabilities
@@ -125,6 +136,13 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::hardwareService.isInitialized) {
+            hardwareService.bind(this)
         }
     }
 }

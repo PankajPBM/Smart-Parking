@@ -148,7 +148,7 @@ abstract class SmartParkingDatabase : RoomDatabase() {
                         siteId = defaultSiteId,
                         username = "admin",
                         fullName = "System Administrator",
-                        pinHash = "0000", // Fast PIN for demo
+                        pinHash = "0000",
                         role = "SUPER_ADMIN"
                     )
                 )
@@ -163,26 +163,7 @@ abstract class SmartParkingDatabase : RoomDatabase() {
                         role = "OPERATOR"
                     )
                 )
-
-                // 5. Default VIP Member Pass (for out-of-the-box testing)
-                val oneYearFromNow = System.currentTimeMillis() + (365L * 24 * 60 * 60 * 1000L)
-                db.membershipDao().insertMembership(
-                    MembershipEntity(
-                        id = UUID.randomUUID().toString(),
-                        memberNumber = "MEM-2026-0001",
-                        fullName = "Pankaj Sharma",
-                        phone = "9814891277",
-                        vehicleNumber = "BA 12 PA 1234",
-                        vehicleTypeId = "CAR",
-                        planType = "VIP_PASS",
-                        startDate = System.currentTimeMillis(),
-                        endDate = oneYearFromNow,
-                        discountPercent = 100,
-                        feePaid = "12000.00",
-                        paymentMethod = "QR_ONLINE",
-                        notes = "Executive VIP Pass - PB Tech Zone"
-                    )
-                )
+                // Zero demo data: Memberships and sessions start completely clean, populated only via cloud sync or live operation
             }
         }
     }

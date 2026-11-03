@@ -140,6 +140,31 @@ interface IWoyouService {
     void exitPrinterBuffer(in boolean commit);
 
     /**
+     * Submit / Commit print buffer to thermal MCU
+     */
+    void commitPrinterBuffer();
+
+    /**
+     * Submit / Commit print buffer with callback
+     */
+    void commitPrinterBufferWithCallback(in ICallback callback);
+
+    /**
+     * Exit transaction mode and print buffer with callback
+     */
+    void exitPrinterBufferWithCallback(in boolean commit, in ICallback callback);
+
+    /**
+     * Clear buffer content
+     */
+    void clearBuffer();
+
+    /**
+     * Set printer style (key: 1=ENABLE_DOUBLE_WIDTH, 2=ENABLE_BOLD, 3=ENABLE_DOUBLE_HEIGHT, 4=ENABLE_UNDERLINE, etc.)
+     */
+    void setPrinterStyle(int key, int value);
+
+    /**
      * Get printer firmware version
      */
     String getServiceVersion();

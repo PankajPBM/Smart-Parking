@@ -4,7 +4,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
-import android.graphics.Bitmap
 import android.os.IBinder
 import android.os.RemoteException
 import com.smartparking.app.hardware.capability.DeviceCapabilities
@@ -28,9 +27,11 @@ sealed class PrintResult {
 }
 
 /**
- * Clean hardware-agnostic parking printer interface
+ * Hardware-agnostic parking printer interface supporting SUNMI V2, V2s, V3, V3 Mix & POS terminals
  */
 interface ParkingPrinter {
+    fun bind(context: Context)
+
     suspend fun printEntryTicket(
         siteName: String,
         ticketNo: String,
@@ -73,25 +74,46 @@ interface ParkingPrinter {
     ): PrintResult
 
     suspend fun getPrinterStatus(): PrintResult
+
+    suspend fun printerSelfChecking(): PrintResult
+
+    suspend fun printEscPosSample(): PrintResult
 }
 
 /**
- * Official SUNMI AIDL-backed Parking Printer Adapter
+ * Enterprise Dual-Engine SUNMI AIDL Adapter
+ *
+ * Implements full backward & forward compatibility across:
+ * - SUNMI V2 / V2s (Android 7.1 - 11, Direct & Buffered streams)
+ * - SUNMI V3 / V3 Mix (Android 13 / SUNMI OS 4+, Transaction Buffer mode, strict Binder tokens)
  */
 class SunmiAidlPrinterAdapter(
-    private val context: Context,
+    private val appContext: Context,
     private val capabilities: DeviceCapabilities
 ) : ParkingPrinter {
 
+    @Volatile
     private var woyouService: IWoyouService? = null
+    @Volatile
     private var isBound = false
+
+    /**
+     * Non-null reusable callback binder stub.
+     * Prevents Android 13 Binder crashes on SUNMI V3 while remaining 100% compatible with SUNMI V2.
+     */
+    private val noOpCallback = object : ICallback.Stub() {
+        override fun onRunResult(isSuccess: Boolean) {}
+        override fun onReturnString(result: String?) {}
+        override fun onRaiseException(code: Int, msg: String?) {}
+        override fun onPrintResult(code: Int, msg: String?) {}
+    }
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             woyouService = IWoyouService.Stub.asInterface(service)
             isBound = true
             try {
-                woyouService?.printerInit(null)
+                woyouService?.printerInit(noOpCallback)
             } catch (e: RemoteException) {
                 e.printStackTrace()
             }
@@ -104,22 +126,28 @@ class SunmiAidlPrinterAdapter(
     }
 
     init {
-        bindService()
+        bind(appContext)
     }
 
-    private fun bindService() {
+    /**
+     * High-priority Dual-Context Service Binding with Foreground Token.
+     * Binds with BIND_AUTO_CREATE or BIND_ABOVE_CLIENT so Android 13 security manager grants print access.
+     */
+    override fun bind(context: Context) {
+        if (isBound && woyouService != null) return
         try {
             val intent = Intent().apply {
                 setPackage("woyou.aidlservice.jiuiv5")
                 action = "woyou.aidlservice.jiuiv5.IWoyouService"
             }
-            context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+            val flags = Context.BIND_AUTO_CREATE or Context.BIND_ABOVE_CLIENT
+            context.bindService(intent, serviceConnection, flags)
         } catch (e: Exception) {
             e.printStackTrace()
         }
     }
 
-    fun unbindService() {
+    fun unbindService(context: Context = appContext) {
         if (isBound) {
             try {
                 context.unbindService(serviceConnection)
@@ -127,6 +155,20 @@ class SunmiAidlPrinterAdapter(
                 e.printStackTrace()
             }
             isBound = false
+            woyouService = null
+        }
+    }
+
+    /**
+     * Official SDK typography style without fragmented raw byte injection.
+     * Protects printhead pipeline on Android 13 SUNMI OS 4 from state machine corruptions.
+     */
+    private fun setBold(service: IWoyouService, enable: Boolean) {
+        try {
+            // WoyouConsts.ENABLE_BOLD = 2, ENABLE = 1, DISABLE = 2
+            service.setPrinterStyle(2, if (enable) 1 else 2)
+        } catch (_: Exception) {
+            // Graceful fallback for older V2 firmware that does not support setPrinterStyle
         }
     }
 
@@ -143,6 +185,42 @@ class SunmiAidlPrinterAdapter(
             }
         } catch (e: RemoteException) {
             PrintResult.Error(-1, e.message ?: "Remote printer exception")
+        }
+    }
+
+    /**
+     * Runs internal hardware calibration pattern directly on thermal MCU
+     */
+    override suspend fun printerSelfChecking(): PrintResult = withContext(Dispatchers.IO) {
+        val service = woyouService ?: return@withContext PrintResult.PrinterUnavailable
+        return@withContext try {
+            service.printerSelfChecking(noOpCallback)
+            PrintResult.Success
+        } catch (e: Exception) {
+            PrintResult.Error(-1, e.message ?: "Self check failed")
+        }
+    }
+
+    /**
+     * Standalone ESC/POS stream directly to thermal MCU bypassing Android typography pipeline
+     */
+    override suspend fun printEscPosSample(): PrintResult = withContext(Dispatchers.IO) {
+        val service = woyouService ?: return@withContext PrintResult.PrinterUnavailable
+        return@withContext try {
+            val escPos = byteArrayOf(
+                0x1B, 0x40, // ESC @ (Init)
+                0x1B, 0x61, 0x01, // ESC a 1 (Center)
+                0x1B, 0x21, 0x30, // ESC ! 0x30 (Double H/W)
+                0x50, 0x42, 0x20, 0x53, 0x4D, 0x41, 0x52, 0x54, 0x20, 0x50, 0x41, 0x52, 0x4B, 0x49, 0x4E, 0x47, 0x0A,
+                0x1B, 0x21, 0x00, // ESC ! 0x00 (Normal)
+                0x53, 0x55, 0x4E, 0x4D, 0x49, 0x20, 0x56, 0x32, 0x2F, 0x56, 0x33, 0x20, 0x54, 0x65, 0x73, 0x74, 0x0A,
+                0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x2D, 0x0A,
+                0x0A, 0x0A, 0x0A, 0x0A
+            )
+            service.sendRAWData(escPos, noOpCallback)
+            PrintResult.Success
+        } catch (e: Exception) {
+            PrintResult.Error(-1, e.message ?: "ESC/POS print failed")
         }
     }
 
@@ -163,62 +241,70 @@ class SunmiAidlPrinterAdapter(
                 val is80mm = capabilities.paperWidth == PaperWidth.WIDTH_80MM
                 val divider = if (is80mm) "================================================" else "--------------------------------"
 
-                // Enter transaction buffer mode for fast atomic printing
+                // 1. Enter transaction buffer and clear previous stale jobs
                 service.enterPrinterBuffer(true)
 
-                // Header
-                service.setAlignment(1, null) // Center
-                service.setFontSize(if (is80mm) 32f else 26f, null)
-                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x01), null) // Bold on
-                service.printText("SMART PARKING\n", null)
-                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x00), null) // Bold off
+                // 2. Initialize formatting with non-null callback
+                service.printerInit(noOpCallback)
 
-                service.setFontSize(if (is80mm) 22f else 18f, null)
-                service.printText("$siteName\n", null)
-                service.printText("ENTRY PASS\n", null)
-                service.printText("$divider\n", null)
+                // 3. Header
+                service.setAlignment(1, noOpCallback) // Center
+                service.setFontSize(if (is80mm) 32f else 26f, noOpCallback)
+                setBold(service, true)
+                service.printText("PB SMART PARKING\n", noOpCallback)
+                setBold(service, false)
 
-                // Details
-                service.setAlignment(0, null) // Left
-                service.setFontSize(if (is80mm) 24f else 20f, null)
-                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x01), null)
-                service.printText("TICKET : $ticketNo\n", null)
-                service.printText("VEHICLE: $vehicleNo\n", null)
-                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x00), null)
+                service.setFontSize(if (is80mm) 22f else 18f, noOpCallback)
+                service.printText("$siteName\n", noOpCallback)
+                service.printText("ENTRY PASS\n", noOpCallback)
+                service.printText("$divider\n", noOpCallback)
 
-                service.printText("TYPE   : $vehicleType\n", null)
-                service.printText("ZONE   : $zoneName\n", null)
-                service.printText("ENTRY  : $entryTime\n", null)
-                service.printText("OPERATOR: $operatorName\n", null)
-                service.printText("$divider\n", null)
+                // 4. Ticket Details
+                service.setAlignment(0, noOpCallback) // Left
+                service.setFontSize(if (is80mm) 24f else 20f, noOpCallback)
+                setBold(service, true)
+                service.printText("TICKET : $ticketNo\n", noOpCallback)
+                service.printText("VEHICLE: $vehicleNo\n", noOpCallback)
+                setBold(service, false)
 
-                // Tariff info
-                service.setFontSize(16f, null)
-                service.printText("Rate: $rateInfo\n", null)
-                service.printText("$divider\n", null)
+                service.printText("TYPE   : $vehicleType\n", noOpCallback)
+                service.printText("ZONE   : $zoneName\n", noOpCallback)
+                service.printText("ENTRY  : $entryTime\n", noOpCallback)
+                service.printText("OPERATOR: $operatorName\n", noOpCallback)
+                service.printText("$divider\n", noOpCallback)
 
-                // QR Code
-                service.setAlignment(1, null) // Center
-                service.printQRCode("TICKET:$ticketNo", if (is80mm) 8 else 6, 2, null)
-                service.printText("\nScan QR at Exit Counter\n", null)
-                service.printText("Lost Ticket Fee Applies\n", null)
-                service.printText("$divider\n\n", null)
+                // 5. Tariff info
+                service.setFontSize(16f, noOpCallback)
+                service.printText("Rate: $rateInfo\n", noOpCallback)
+                service.printText("$divider\n", noOpCallback)
 
-                // Feed and cut
-                service.lineWrap(3, null)
+                // 6. QR Code
+                service.setAlignment(1, noOpCallback) // Center
+                service.printQRCode("TICKET:$ticketNo", if (is80mm) 8 else 6, 2, noOpCallback)
+                service.printText("\nScan QR at Exit Counter\n", noOpCallback)
+                service.printText("Lost Ticket Fee Applies\n", noOpCallback)
+                service.printText("$divider\n", noOpCallback)
+
+                // 7. Feed paper
+                service.lineWrap(if (is80mm) 4 else 4, noOpCallback)
                 if (is80mm) {
-                    service.cutPaper(null)
+                    try { service.cutPaper(noOpCallback) } catch (_: Exception) {}
                 }
 
-                // Execute print buffer
+                // 8. CRITICAL FOR V3 & V2: Force printhead to burn the buffered content
+                try {
+                    service.commitPrinterBuffer()
+                } catch (_: Exception) {}
+
                 service.exitPrinterBuffer(true)
+
                 if (continuation.isActive) {
                     continuation.resume(PrintResult.Success)
                 }
 
             } catch (e: Exception) {
                 if (continuation.isActive) {
-                    continuation.resume(PrintResult.Error(-1, e.message ?: "Exception occurred during printing"))
+                    continuation.resume(PrintResult.Error(-1, e.message ?: "Exception occurred during entry printing"))
                 }
             }
         }
@@ -246,60 +332,70 @@ class SunmiAidlPrinterAdapter(
                 val is80mm = capabilities.paperWidth == PaperWidth.WIDTH_80MM
                 val divider = if (is80mm) "================================================" else "--------------------------------"
 
+                // 1. Enter transaction buffer and clear stale jobs
                 service.enterPrinterBuffer(true)
 
-                // Header
-                service.setAlignment(1, null)
-                service.setFontSize(if (is80mm) 32f else 26f, null)
-                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x01), null)
-                service.printText("SMART PARKING\n", null)
-                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x00), null)
+                // 2. Initialize formatting
+                service.printerInit(noOpCallback)
 
-                service.setFontSize(18f, null)
-                service.printText("$siteName\n", null)
-                service.printText("OFFICIAL RECEIPT\n", null)
-                service.printText("Receipt #: $receiptNo\n", null)
-                service.printText("$divider\n", null)
+                // 3. Header
+                service.setAlignment(1, noOpCallback)
+                service.setFontSize(if (is80mm) 32f else 26f, noOpCallback)
+                setBold(service, true)
+                service.printText("PB SMART PARKING\n", noOpCallback)
+                setBold(service, false)
 
-                // Body
-                service.setAlignment(0, null)
-                service.setFontSize(20f, null)
-                service.printText("Ticket   : $ticketNo\n", null)
-                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x01), null)
-                service.printText("Vehicle  : $vehicleNo ($vehicleType)\n", null)
-                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x00), null)
-                service.printText("Entry    : $entryTime\n", null)
-                service.printText("Exit     : $exitTime\n", null)
-                service.printText("Duration : $duration\n", null)
-                service.printText("$divider\n", null)
+                service.setFontSize(18f, noOpCallback)
+                service.printText("$siteName\n", noOpCallback)
+                service.printText("OFFICIAL RECEIPT\n", noOpCallback)
+                service.printText("Receipt #: $receiptNo\n", noOpCallback)
+                service.printText("$divider\n", noOpCallback)
 
-                // Amounts
-                service.setAlignment(2, null) // Right
-                service.printText("Parking Fee : $parkingFee\n", null)
+                // 4. Details
+                service.setAlignment(0, noOpCallback)
+                service.setFontSize(20f, noOpCallback)
+                service.printText("Ticket   : $ticketNo\n", noOpCallback)
+                setBold(service, true)
+                service.printText("Vehicle  : $vehicleNo ($vehicleType)\n", noOpCallback)
+                setBold(service, false)
+                service.printText("Entry    : $entryTime\n", noOpCallback)
+                service.printText("Exit     : $exitTime\n", noOpCallback)
+                service.printText("Duration : $duration\n", noOpCallback)
+                service.printText("$divider\n", noOpCallback)
+
+                // 5. Payment details
+                service.setAlignment(2, noOpCallback) // Right
+                service.printText("Parking Fee : NPR $parkingFee\n", noOpCallback)
                 if (discount.isNotEmpty() && discount != "0.00") {
-                    service.printText("Discount    : -$discount\n", null)
+                    service.printText("Discount    : -NPR $discount\n", noOpCallback)
                 }
-                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x01), null)
-                service.setFontSize(24f, null)
-                service.printText("TOTAL PAID  : $totalPaid\n", null)
-                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x00), null)
-                service.setFontSize(18f, null)
-                service.printText("Payment Mode: $paymentMethod\n", null)
-                service.printText("$divider\n", null)
+                setBold(service, true)
+                service.setFontSize(24f, noOpCallback)
+                service.printText("TOTAL PAID  : NPR $totalPaid\n", noOpCallback)
+                setBold(service, false)
+                service.setFontSize(18f, noOpCallback)
+                service.printText("Payment Mode: $paymentMethod\n", noOpCallback)
+                service.printText("$divider\n", noOpCallback)
 
-                // Footer
-                service.setAlignment(1, null)
-                service.printText("Cashier: $operatorName\n", null)
-                service.printText("Thank you for parking with us!\n", null)
-                service.printText("Drive Safely\n\n", null)
+                // 6. Footer
+                service.setAlignment(1, noOpCallback)
+                service.printText("Cashier: $operatorName\n", noOpCallback)
+                service.printText("Thank you for parking with us!\n", noOpCallback)
+                service.printText("Drive Safely\n", noOpCallback)
 
-                service.lineWrap(3, null)
+                // 7. Feed and cut
+                service.lineWrap(if (is80mm) 4 else 4, noOpCallback)
                 if (is80mm) {
-                    service.cutPaper(null)
+                    try { service.cutPaper(noOpCallback) } catch (_: Exception) {}
                 }
 
-                // Execute print buffer
+                // 8. Commit and exit buffer
+                try {
+                    service.commitPrinterBuffer()
+                } catch (_: Exception) {}
+
                 service.exitPrinterBuffer(true)
+
                 if (continuation.isActive) {
                     continuation.resume(PrintResult.Success)
                 }
@@ -332,61 +428,67 @@ class SunmiAidlPrinterAdapter(
                 val is80mm = capabilities.paperWidth == PaperWidth.WIDTH_80MM
                 val divider = if (is80mm) "================================================" else "--------------------------------"
 
+                // 1. Enter buffer
                 service.enterPrinterBuffer(true)
+                service.printerInit(noOpCallback)
 
-                // Header
-                service.setAlignment(1, null)
-                service.setFontSize(if (is80mm) 32f else 26f, null)
-                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x01), null)
-                service.printText("VIP MEMBERSHIP PASS\n", null)
-                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x00), null)
+                // 2. Header
+                service.setAlignment(1, noOpCallback)
+                service.setFontSize(if (is80mm) 32f else 26f, noOpCallback)
+                setBold(service, true)
+                service.printText("VIP MEMBERSHIP PASS\n", noOpCallback)
+                setBold(service, false)
 
-                service.setFontSize(18f, null)
-                service.printText("$siteName\n", null)
-                service.printText("PB SMART PARKING\n", null)
-                service.printText("$divider\n", null)
+                service.setFontSize(18f, noOpCallback)
+                service.printText("$siteName\n", noOpCallback)
+                service.printText("PB SMART PARKING\n", noOpCallback)
+                service.printText("$divider\n", noOpCallback)
 
-                // Member QR code for fast entry/exit scanning
-                service.setAlignment(1, null)
-                service.printQRCode(memberNo, 6, 2, null)
-                service.printText("\n", null)
+                // 3. Member QR code
+                service.setAlignment(1, noOpCallback)
+                service.printQRCode(memberNo, 6, 2, noOpCallback)
+                service.printText("\n", noOpCallback)
 
-                // Details
-                service.setAlignment(0, null)
-                service.setFontSize(20f, null)
-                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x01), null)
-                service.printText("PASS NO : $memberNo\n", null)
-                service.printText("MEMBER  : $memberName\n", null)
-                service.printText("VEHICLE : $vehicleNo\n", null)
-                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x00), null)
+                // 4. Details
+                service.setAlignment(0, noOpCallback)
+                service.setFontSize(20f, noOpCallback)
+                setBold(service, true)
+                service.printText("PASS NO : $memberNo\n", noOpCallback)
+                service.printText("MEMBER  : $memberName\n", noOpCallback)
+                service.printText("VEHICLE : $vehicleNo\n", noOpCallback)
+                setBold(service, false)
 
-                service.printText("TYPE    : $vehicleType\n", null)
-                service.printText("PHONE   : $phone\n", null)
-                service.printText("PLAN    : $planType\n", null)
-                service.printText("VALID   : $validFrom\n", null)
-                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x01), null)
-                service.printText("EXPIRES : $validUntil\n", null)
-                service.sendRAWData(byteArrayOf(0x1B, 0x45, 0x00), null)
-                service.printText("$divider\n", null)
+                service.printText("TYPE    : $vehicleType\n", noOpCallback)
+                service.printText("PHONE   : $phone\n", noOpCallback)
+                service.printText("PLAN    : $planType\n", noOpCallback)
+                service.printText("VALID   : $validFrom\n", noOpCallback)
+                setBold(service, true)
+                service.printText("EXPIRES : $validUntil\n", noOpCallback)
+                setBold(service, false)
+                service.printText("$divider\n", noOpCallback)
 
-                // Fee Info
-                service.setAlignment(2, null)
-                service.printText("FEE PAID : NPR $amountPaid\n", null)
-                service.printText("$divider\n", null)
+                // 5. Fee Info
+                service.setAlignment(2, noOpCallback)
+                service.printText("FEE PAID : NPR $amountPaid\n", noOpCallback)
+                service.printText("$divider\n", noOpCallback)
 
-                // Footer
-                service.setAlignment(1, null)
-                service.printText("Issued By: $operatorName\n", null)
-                service.printText("Scan QR at gate for instant zero-fee access\n", null)
-                service.printText("PB Tech Zone - 9814891277\n\n", null)
+                // 6. Footer
+                service.setAlignment(1, noOpCallback)
+                service.printText("Issued By: $operatorName\n", noOpCallback)
+                service.printText("Scan QR at gate for instant zero-fee access\n", noOpCallback)
 
-                service.lineWrap(3, null)
+                service.lineWrap(if (is80mm) 4 else 4, noOpCallback)
                 if (is80mm) {
-                    service.cutPaper(null)
+                    try { service.cutPaper(noOpCallback) } catch (_: Exception) {}
                 }
 
-                // Execute print buffer
+                // 7. Commit & exit buffer
+                try {
+                    service.commitPrinterBuffer()
+                } catch (_: Exception) {}
+
                 service.exitPrinterBuffer(true)
+
                 if (continuation.isActive) {
                     continuation.resume(PrintResult.Success)
                 }

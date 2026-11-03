@@ -29,6 +29,10 @@ import androidx.navigation.NavController
 import com.smartparking.app.hardware.capability.AppMetadata
 import com.smartparking.app.hardware.capability.DeviceCapabilities
 import com.smartparking.app.ui.theme.*
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -95,12 +99,12 @@ fun DeviceAndAppInfoScreen(
                 }
             }
 
-            // 5. Test Hardware Button
+            // 5. Test Hardware Button (Formatted AIDL Test)
             Button(
                 onClick = onTestPrinter,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp),
+                    .height(52.dp),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
             ) {
@@ -108,9 +112,65 @@ fun DeviceAndAppInfoScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text("🖨️", fontSize = 20.sp)
-                    Text("TEST HARDWARE PRINT", style = MaterialTheme.typography.labelLarge)
+                    Text("🖨️", fontSize = 18.sp)
+                    Text("TEST HARDWARE PRINT (AIDL)", style = MaterialTheme.typography.labelLarge)
                 }
+            }
+
+            // 6. Direct Firmware Diagnostics & ESC/POS Fallback
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        com.smartparking.app.hardware.printer.UniversalHardwareService.getInstance(context).printSelfCheck {
+                            (context as? android.app.Activity)?.runOnUiThread {
+                                Toast.makeText(context, "Firmware Self-Check Pattern Sent", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    modifier = Modifier.weight(1f).height(48.dp),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("⚙️ Self-Check", style = MaterialTheme.typography.labelMedium)
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        com.smartparking.app.hardware.printer.UniversalHardwareService.getInstance(context).printEscPosSample {
+                            (context as? android.app.Activity)?.runOnUiThread {
+                                Toast.makeText(context, "Direct ESC/POS Sent to MCU", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    modifier = Modifier.weight(1f).height(48.dp),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("⚡ Raw ESC/POS", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+
+            // 7. Remote Version Check & OTA Update Trigger
+            OutlinedButton(
+                onClick = {
+                    (context as? androidx.activity.ComponentActivity)?.let { act ->
+                        act.lifecycleScope.launch(Dispatchers.IO) {
+                            val result = com.smartparking.app.version.AppVersionManager.getInstance(act).checkForUpdates()
+                            withContext(Dispatchers.Main) {
+                                if (result != null && result.hasUpdate) {
+                                    com.smartparking.app.version.AppVersionManager.getInstance(act).showUpdateDialog(act, result)
+                                } else {
+                                    Toast.makeText(act, "App is up to date (v${com.smartparking.app.BuildConfig.VERSION_NAME})", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text("🔄 Check for Remote Updates", style = MaterialTheme.typography.labelMedium)
             }
 
             Spacer(modifier = Modifier.height(12.dp))
