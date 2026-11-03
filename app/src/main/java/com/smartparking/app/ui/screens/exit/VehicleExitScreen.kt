@@ -8,10 +8,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
@@ -23,23 +26,24 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.smartparking.app.data.local.SmartParkingDatabase
 import com.smartparking.app.data.local.entity.MembershipEntity
-import com.smartparking.app.data.local.entity.ParkingSessionEntity
 import com.smartparking.app.domain.settings.PosSettingsRepository
-import com.smartparking.app.domain.tariff.TariffConfig
 import com.smartparking.app.domain.tariff.TariffEngine
 import com.smartparking.app.domain.tariff.TariffRepository
-import com.smartparking.app.domain.tariff.TariffTier
+import com.smartparking.app.hardware.sunmi.SunmiScannerManager
+import com.smartparking.app.hardware.sunmi.SunmiScannerReceiver
 import com.smartparking.app.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.math.BigDecimal
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -64,6 +68,7 @@ data class ExitVehicleInfo(
 @Composable
 fun VehicleExitScreen(
     navController: NavController,
+    initialTicketNumber: String = "",
     onProcessExit: (ticketNumber: String, paymentMethod: String) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
@@ -71,9 +76,12 @@ fun VehicleExitScreen(
     val database = remember { SmartParkingDatabase.getInstance(context) }
     val tariffEngine = remember { TariffEngine() }
     val posSettingsRepo = remember { PosSettingsRepository.getInstance(context) }
+    val scannerManager = remember { SunmiScannerManager(context) }
+    val keyboardController = LocalSoftwareKeyboardController.current
+
     val enabledPaymentMethods = remember { posSettingsRepo.getEnabledPaymentMethods() }
 
-    var searchQuery by remember { mutableStateOf("") }
+    var searchQuery by remember { mutableStateOf(initialTicketNumber) }
     var vehicleFound by remember { mutableStateOf<ExitVehicleInfo?>(null) }
     var selectedPayment by remember {
         mutableStateOf(enabledPaymentMethods.firstOrNull { it != "VIP_PASS" } ?: "CASH")
@@ -82,19 +90,12 @@ fun VehicleExitScreen(
     var isCompleting by remember { mutableStateOf(false) }
     var searchError by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(enabledPaymentMethods, vehicleFound) {
-        if (vehicleFound?.membership != null) {
-            selectedPayment = "VIP_PASS"
-        } else if (!enabledPaymentMethods.contains(selectedPayment)) {
-            selectedPayment = enabledPaymentMethods.firstOrNull { it != "VIP_PASS" } ?: "CASH"
-        }
-    }
-
     fun lookupVehicle(queryStr: String) {
         val clean = queryStr.trim().uppercase(Locale.US)
         if (clean.isBlank()) return
         isSearching = true
         searchError = null
+        keyboardController?.hide()
 
         coroutineScope.launch {
             withContext(Dispatchers.IO) {
@@ -124,7 +125,6 @@ fun VehicleExitScreen(
                         coroutineScope.launch(Dispatchers.IO) {
                             val activeMember = database.membershipDao().getActiveMembershipForVehicle(session.vehicleNumber, exitTimeEpoch)
 
-                            // Dynamic tariff configuration (synced from Cloudflare portal or cached defaults)
                             val activeTariff = TariffRepository.getInstance(context).getTariff(session.vehicleTypeId)
 
                             val calcResult = tariffEngine.calculateFee(
@@ -164,10 +164,45 @@ fun VehicleExitScreen(
         }
     }
 
+    // 1. Reactive subscription to SUNMI hardware scanner broadcasts
+    LaunchedEffect(Unit) {
+        SunmiScannerReceiver.scanFlow.collect { result ->
+            if (result.data.isNotBlank()) {
+                searchQuery = result.data
+                lookupVehicle(result.data)
+            }
+        }
+    }
+
+    // 2. Auto-load initial ticket if passed from navigation
+    LaunchedEffect(initialTicketNumber) {
+        if (initialTicketNumber.isNotBlank()) {
+            searchQuery = initialTicketNumber
+            lookupVehicle(initialTicketNumber)
+        }
+    }
+
+    LaunchedEffect(enabledPaymentMethods, vehicleFound) {
+        if (vehicleFound?.membership != null) {
+            selectedPayment = "VIP_PASS"
+        } else if (!enabledPaymentMethods.contains(selectedPayment)) {
+            selectedPayment = enabledPaymentMethods.firstOrNull { it != "VIP_PASS" } ?: "CASH"
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Vehicle Exit & Billing", fontWeight = FontWeight.Bold) },
+                title = {
+                    Column {
+                        Text("Vehicle Exit & Billing", fontWeight = FontWeight.Bold)
+                        Text(
+                            "Scan ticket or search plate",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Back")
@@ -190,16 +225,18 @@ fun VehicleExitScreen(
             Spacer(modifier = Modifier.height(2.dp))
 
             if (vehicleFound == null) {
-                // 1. Scan Ticket / QR Section
+                // 1. Scan Ticket / QR Section (Hardware Trigger)
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
-                            // If hardware scanner or camera triggers, simulate demo vehicle BA 12 PA 1234
-                            lookupVehicle("BA 12 PA 1234")
+                            // Trigger physical laser or camera scanner on SUNMI
+                            scannerManager.triggerScan()
+                            Toast.makeText(context, "Scanner triggered. Scan ticket QR code.", Toast.LENGTH_SHORT).show()
                         },
                     shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = PrimaryBlue.copy(alpha = 0.1f))
+                    colors = CardDefaults.cardColors(containerColor = PrimaryBlue.copy(alpha = 0.08f)),
+                    border = CardDefaults.outlinedCardBorder()
                 ) {
                     Column(
                         modifier = Modifier
@@ -208,21 +245,29 @@ fun VehicleExitScreen(
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.QrCodeScanner,
-                            contentDescription = "Scan QR",
-                            modifier = Modifier.size(56.dp),
-                            tint = PrimaryBlue
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = PrimaryBlue.copy(alpha = 0.15f),
+                            modifier = Modifier.size(64.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.QrCodeScanner,
+                                    contentDescription = "Scan QR",
+                                    modifier = Modifier.size(36.dp),
+                                    tint = PrimaryBlue
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = "Scan Ticket QR Code",
+                            text = "Scan Ticket Barcode / QR",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = PrimaryBlue
                         )
                         Text(
-                            text = "SUNMI hardware scanner active | Tap to test",
+                            text = "SUNMI hardware scanner listening • Tap to trigger beam",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -231,54 +276,90 @@ fun VehicleExitScreen(
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-                // 2. Manual Search Box
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = "Or Search Vehicle Number / Ticket",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                // 2. Manual Search Box - Perfectly Aligned
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        OutlinedTextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it.uppercase() },
-                            modifier = Modifier.weight(1f),
-                            placeholder = { Text("e.g. BA 12 PA 1234 or SP-...") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(12.dp)
+                        Text(
+                            text = "Search by Ticket No or License Plate",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
                         )
 
-                        Button(
-                            onClick = { lookupVehicle(searchQuery) },
-                            modifier = Modifier.height(56.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            enabled = searchQuery.isNotBlank() && !isSearching
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            if (isSearching) {
-                                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp))
-                            } else {
-                                Icon(Icons.Default.Search, contentDescription = "Search")
+                            OutlinedTextField(
+                                value = searchQuery,
+                                onValueChange = { searchQuery = it.uppercase() },
+                                modifier = Modifier.weight(1f),
+                                label = { Text("Ticket or Plate Number") },
+                                placeholder = { Text("e.g. SP-2026... or 1234") },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Search, contentDescription = null, tint = PrimaryBlue)
+                                },
+                                trailingIcon = {
+                                    if (searchQuery.isNotEmpty()) {
+                                        IconButton(onClick = { searchQuery = "" }) {
+                                            Icon(Icons.Default.Clear, contentDescription = "Clear", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                },
+                                singleLine = true,
+                                shape = RoundedCornerShape(12.dp),
+                                keyboardOptions = KeyboardOptions(
+                                    capitalization = KeyboardCapitalization.Characters,
+                                    imeAction = ImeAction.Search
+                                ),
+                                keyboardActions = KeyboardActions(
+                                    onSearch = { lookupVehicle(searchQuery) }
+                                ),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = PrimaryBlue,
+                                    unfocusedBorderColor = BorderLight
+                                )
+                            )
+
+                            Button(
+                                onClick = { lookupVehicle(searchQuery) },
+                                modifier = Modifier.height(56.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                enabled = searchQuery.isNotBlank() && !isSearching,
+                                colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
+                            ) {
+                                if (isSearching) {
+                                    CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp))
+                                } else {
+                                    Text("FIND", fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
-                    }
 
-                    searchError?.let { err ->
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = ErrorRed.copy(alpha = 0.12f),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = err,
-                                modifier = Modifier.padding(10.dp),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = ErrorRed
-                            )
+                        searchError?.let { err ->
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = ErrorRed.copy(alpha = 0.12f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = err,
+                                    modifier = Modifier.padding(12.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = ErrorRed,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
                         }
                     }
                 }
@@ -411,13 +492,16 @@ fun VehicleExitScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     OutlinedButton(
-                        onClick = { vehicleFound = null },
+                        onClick = {
+                            vehicleFound = null
+                            searchQuery = ""
+                        },
                         modifier = Modifier
                             .weight(1f)
                             .height(56.dp),
                         shape = RoundedCornerShape(12.dp)
                     ) {
-                        Text("CANCEL")
+                        Text("CANCEL", fontWeight = FontWeight.Bold)
                     }
 
                     Button(
@@ -606,7 +690,7 @@ fun PaymentMethodSection(
         Text(
             text = "Payment Method",
             style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold
+            fontWeight = FontWeight.Bold
         )
 
         Row(
@@ -616,7 +700,7 @@ fun PaymentMethodSection(
             val allMethods = if (isMemberPass) {
                 listOf("VIP_PASS" to "👑 Member Pass", "CASH" to "💵 Cash")
             } else {
-                listOf("CASH" to "💵 Cash", "QR_ONLINE" to "📱 QR / Fonepay", "CARD" to "💳 Card")
+                listOf("CASH" to "💵 Cash", "QR_ONLINE" to "📱 QR Pay", "CARD" to "💳 Card")
             }
 
             val activeMethods = allMethods.filter { (id, _) ->

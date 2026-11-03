@@ -3,23 +3,26 @@
 package com.smartparking.app.ui.screens.dashboard
 
 import android.widget.Toast
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -27,9 +30,12 @@ import androidx.navigation.NavController
 import com.smartparking.app.data.local.SmartParkingDatabase
 import com.smartparking.app.data.local.entity.ParkingSessionEntity
 import com.smartparking.app.hardware.capability.DeviceCapabilities
+import com.smartparking.app.hardware.sunmi.SunmiScannerReceiver
 import com.smartparking.app.license.PbLicenseService
 import com.smartparking.app.ui.theme.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -41,12 +47,14 @@ fun DashboardScreen(
     capabilities: DeviceCapabilities? = null
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val database = remember { SmartParkingDatabase.getInstance(context) }
     val licenseService = remember { PbLicenseService.getInstance(context) }
 
     var licenseState by remember { mutableStateOf(licenseService.getLicenseState()) }
+    var isSyncing by remember { mutableStateOf(false) }
 
-    // Start of current day timestamp
+    // Start of current day timestamp for shift metrics
     val startOfDay = remember {
         Calendar.getInstance().apply {
             set(Calendar.HOUR_OF_DAY, 0)
@@ -65,12 +73,22 @@ fun DashboardScreen(
 
     val totalCapacity = 200
     val availableSpots = (totalCapacity - parkedCount).coerceAtLeast(0)
-    val coroutineScope = rememberCoroutineScope()
 
-    // Real-time Cloud Sync on launch
+    // Background sync on launch
     LaunchedEffect(Unit) {
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        withContext(Dispatchers.IO) {
             com.smartparking.app.sync.ParkingSyncService.getInstance(context).syncWithCloud()
+        }
+    }
+
+    // Auto-navigate to exit when barcode/QR is scanned anywhere from the dashboard
+    LaunchedEffect(Unit) {
+        SunmiScannerReceiver.scanFlow.collect { result ->
+            if (result.data.isNotBlank()) {
+                withContext(Dispatchers.Main) {
+                    navController.navigate("exit?ticketNo=${result.data}")
+                }
+            }
         }
     }
 
@@ -79,15 +97,20 @@ fun DashboardScreen(
             DashboardTopBar(
                 capabilities = capabilities,
                 licenseState = licenseState,
+                isSyncing = isSyncing,
                 onLicenseClick = { navController.navigate("license") },
                 onInfoClick = { navController.navigate("device_info") },
                 onSyncClick = {
-                    coroutineScope.launch {
-                        Toast.makeText(context, "Syncing with PB Cloud...", Toast.LENGTH_SHORT).show()
-                        val res = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            com.smartparking.app.sync.ParkingSyncService.getInstance(context).syncWithCloud()
+                    if (!isSyncing) {
+                        isSyncing = true
+                        coroutineScope.launch {
+                            val res = withContext(Dispatchers.IO) {
+                                com.smartparking.app.sync.ParkingSyncService.getInstance(context).syncWithCloud()
+                            }
+                            isSyncing = false
+                            licenseState = licenseService.getLicenseState()
+                            Toast.makeText(context, res.message, Toast.LENGTH_SHORT).show()
                         }
-                        Toast.makeText(context, res.message, Toast.LENGTH_LONG).show()
                     }
                 }
             )
@@ -100,43 +123,17 @@ fun DashboardScreen(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            item { Spacer(modifier = Modifier.height(8.dp)) }
+            item { Spacer(modifier = Modifier.height(4.dp)) }
 
-            // 1. Live Device Status Banner
-            capabilities?.let { caps ->
-                item {
-                    DeviceStatusBanner(
-                        model = "${caps.manufacturer} ${caps.model}",
-                        serialNumber = caps.serialNumber,
-                        isSunmi = caps.isSunmiDevice,
-                        onBannerClick = { navController.navigate("device_info") }
-                    )
-                }
-            }
-
-            // 2. Live Statistics Overview (Cards)
+            // 1. HERO OPERATIONAL ACTIONS (Vehicle Entry & Exit)
             item {
-                StatisticsOverview(
-                    totalCapacity = totalCapacity,
-                    currentlyParked = parkedCount,
-                    todayEntries = todayEntries,
-                    activeMembers = activeMembersCount
-                )
-            }
-
-            // 3. Quick Action Buttons (6 Aligned Actions)
-            item {
-                QuickActionSection(
+                HeroActionsSection(
                     onEntryClick = { navController.navigate("entry") },
-                    onExitClick = { navController.navigate("exit") },
-                    onMembershipClick = { navController.navigate("membership") },
-                    onLicenseClick = { navController.navigate("license") },
-                    onReportsClick = { navController.navigate("reports") },
-                    onDeviceClick = { navController.navigate("device_info") }
+                    onExitClick = { navController.navigate("exit") }
                 )
             }
 
-            // 4. Live Occupancy Bar
+            // 2. PARKING OCCUPANCY & CAPACITY CARD
             item {
                 OccupancyCard(
                     total = totalCapacity,
@@ -145,48 +142,75 @@ fun DashboardScreen(
                 )
             }
 
-            // 5. Recent Activity Header
+            // 3. TODAY'S SHIFT METRICS (4 Clean Cards)
+            item {
+                ShiftMetricsGrid(
+                    parkedCount = parkedCount,
+                    todayEntries = todayEntries,
+                    todayExits = todayExits,
+                    activeMembersCount = activeMembersCount
+                )
+            }
+
+            // 4. MANAGEMENT & TOOLS TILES (VIP Passes, Reports, License, Terminal)
+            item {
+                ManagementTilesSection(
+                    onMembershipClick = { navController.navigate("membership") },
+                    onReportsClick = { navController.navigate("reports") },
+                    onLicenseClick = { navController.navigate("license") },
+                    onDeviceClick = { navController.navigate("device_info") }
+                )
+            }
+
+            // 5. CURRENTLY PARKED VEHICLES HEADER
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "Currently Parked Vehicles (${liveParkedSessions.size})",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
+                    Column {
+                        Text(
+                            text = "Currently Parked Vehicles (${liveParkedSessions.size})",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Tap any vehicle to quickly bill and exit",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
                     TextButton(onClick = { navController.navigate("reports") }) {
-                        Text("View All Logs")
+                        Text("All Logs", fontWeight = FontWeight.Bold)
                     }
                 }
             }
 
-            // 6. Parked Vehicles List
+            // 6. PARKED VEHICLES LIST
             if (liveParkedSessions.isEmpty()) {
                 item {
                     Surface(
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(16.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(24.dp),
+                                .padding(28.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text(text = "🅿️", fontSize = 32.sp)
+                            Text(text = "🅿️", fontSize = 36.sp)
                             Text(
-                                text = "No vehicles currently parked",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.SemiBold
+                                text = "Parking Lot is Empty",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Tap \"Vehicle Entry\" to record and print ticket for incoming vehicles.",
+                                text = "Tap \"Vehicle Entry\" to record incoming vehicle and print ticket.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -194,10 +218,12 @@ fun DashboardScreen(
                     }
                 }
             } else {
-                items(liveParkedSessions.take(10), key = { it.id }) { session ->
+                items(liveParkedSessions.take(15), key = { it.id }) { session ->
                     LiveParkedVehicleItem(
                         session = session,
-                        onExitClick = { navController.navigate("exit") }
+                        onExitClick = {
+                            navController.navigate("exit?ticketNo=${session.ticketNumber}")
+                        }
                     )
                 }
             }
@@ -207,41 +233,62 @@ fun DashboardScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardTopBar(
     capabilities: DeviceCapabilities?,
     licenseState: PbLicenseService.LicenseState,
+    isSyncing: Boolean,
     onLicenseClick: () -> Unit,
     onInfoClick: () -> Unit,
     onSyncClick: () -> Unit
 ) {
+    val rotation by rememberInfiniteTransition(label = "sync").animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "sync_rotation"
+    )
+
     TopAppBar(
         title = {
             Column {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "Smart Parking",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(SuccessGreen, CircleShape)
+                    )
+                }
                 Text(
-                    text = "Smart Parking",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = capabilities?.let { "${it.manufacturer} ${it.model} • SN: ${it.serialNumber}" } ?: "Terminal • SUNMI POS",
+                    text = capabilities?.let { "${it.manufacturer} ${it.model} • SN: ${it.serialNumber}" } ?: "SUNMI POS Terminal",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         },
         actions = {
-            // Manual Cloud Sync button
+            // Cloud Sync Icon with rotation animation when active
             IconButton(onClick = onSyncClick) {
                 Icon(
                     imageVector = Icons.Default.Sync,
-                    contentDescription = "Sync with Cloud",
+                    contentDescription = "Sync",
+                    modifier = Modifier.then(if (isSyncing) Modifier.rotate(rotation) else Modifier),
                     tint = PrimaryBlue
                 )
             }
 
-            // License status badge pill (clickable)
+            // License Status Pill
             Surface(
                 modifier = Modifier
                     .clip(RoundedCornerShape(16.dp))
@@ -274,10 +321,11 @@ fun DashboardTopBar(
                 }
             }
 
+            // Info icon
             IconButton(onClick = onInfoClick) {
                 Icon(
                     imageVector = Icons.Default.Info,
-                    contentDescription = "Device & App Info",
+                    contentDescription = "Device Info",
                     tint = PrimaryBlue
                 )
             }
@@ -289,259 +337,116 @@ fun DashboardTopBar(
 }
 
 @Composable
-fun DeviceStatusBanner(
-    model: String,
-    serialNumber: String,
-    isSunmi: Boolean,
-    onBannerClick: () -> Unit
+fun HeroActionsSection(
+    onEntryClick: () -> Unit,
+    onExitClick: () -> Unit
 ) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onBannerClick() },
-        shape = RoundedCornerShape(12.dp),
-        color = if (isSunmi) PrimaryBlue.copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceVariant,
-        border = CardDefaults.outlinedCardBorder()
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Row(
+        // VEHICLE ENTRY HERO CARD
+        Card(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .weight(1f)
+                .height(112.dp)
+                .clickable { onEntryClick() },
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = PrimaryBlue),
+            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
         ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(text = "📱", fontSize = 18.sp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Text(text = "🚗", fontSize = 28.sp)
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color.White.copy(alpha = 0.2f)
+                    ) {
+                        Text(
+                            text = "NEW IN",
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                }
+
                 Column {
                     Text(
-                        text = model,
-                        style = MaterialTheme.typography.labelMedium,
+                        text = "Vehicle Entry",
+                        style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = Color.White
                     )
                     Text(
-                        text = "SN: $serialNumber",
+                        text = "Print Ticket",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = Color.White.copy(alpha = 0.85f)
                     )
                 }
             }
+        }
 
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = SuccessGreen.copy(alpha = 0.15f)
+        // VEHICLE EXIT HERO CARD
+        Card(
+            modifier = Modifier
+                .weight(1f)
+                .height(112.dp)
+                .clickable { onExitClick() },
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = SuccessGreen),
+            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(
-                    text = "HARDWARE READY",
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = SuccessGreen,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Text(text = "🚪", fontSize = 28.sp)
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color.White.copy(alpha = 0.2f)
+                    ) {
+                        Text(
+                            text = "OUT & PAY",
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                }
+
+                Column {
+                    Text(
+                        text = "Vehicle Exit",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                    Text(
+                        text = "Scan QR & Bill",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.85f)
+                    )
+                }
             }
-        }
-    }
-}
-
-@Composable
-fun StatisticsOverview(
-    totalCapacity: Int,
-    currentlyParked: Int,
-    todayEntries: Int,
-    activeMembers: Int
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            StatCard(
-                modifier = Modifier.weight(1f),
-                title = "Total Capacity",
-                value = "$totalCapacity spots",
-                icon = "🅿️",
-                color = PrimaryBlue
-            )
-            StatCard(
-                modifier = Modifier.weight(1f),
-                title = "Parked Now",
-                value = "$currentlyParked",
-                icon = "🚗",
-                color = StatusParked
-            )
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            StatCard(
-                modifier = Modifier.weight(1f),
-                title = "Today Entries",
-                value = "$todayEntries",
-                icon = "🚪",
-                color = SuccessGreen
-            )
-            StatCard(
-                modifier = Modifier.weight(1f),
-                title = "Active Passes",
-                value = "$activeMembers VIPs",
-                icon = "👑",
-                color = AmberWarning
-            )
-        }
-    }
-}
-
-@Composable
-fun StatCard(
-    modifier: Modifier = Modifier,
-    title: String,
-    value: String,
-    icon: String,
-    color: Color
-) {
-    Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(text = icon, fontSize = 20.sp)
-            }
-            Text(
-                text = value,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-        }
-    }
-}
-
-@Composable
-fun QuickActionSection(
-    onEntryClick: () -> Unit,
-    onExitClick: () -> Unit,
-    onMembershipClick: () -> Unit,
-    onLicenseClick: () -> Unit,
-    onReportsClick: () -> Unit,
-    onDeviceClick: () -> Unit
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(
-            text = "Quick Actions",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onBackground
-        )
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            ActionButton(
-                modifier = Modifier.weight(1f),
-                label = "Vehicle Entry",
-                icon = "🚗",
-                backgroundColor = PrimaryBlue,
-                onClick = onEntryClick
-            )
-            ActionButton(
-                modifier = Modifier.weight(1f),
-                label = "Vehicle Exit",
-                icon = "🚪",
-                backgroundColor = SuccessGreen,
-                onClick = onExitClick
-            )
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            ActionButton(
-                modifier = Modifier.weight(1f),
-                label = "Memberships",
-                icon = "👑",
-                backgroundColor = AmberWarning,
-                onClick = onMembershipClick
-            )
-            ActionButton(
-                modifier = Modifier.weight(1f),
-                label = "PB License",
-                icon = "🔑",
-                backgroundColor = PrimaryBlue,
-                onClick = onLicenseClick
-            )
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            ActionButton(
-                modifier = Modifier.weight(1f),
-                label = "History & Logs",
-                icon = "📊",
-                backgroundColor = InfoBlue,
-                onClick = onReportsClick
-            )
-            ActionButton(
-                modifier = Modifier.weight(1f),
-                label = "Device Info",
-                icon = "⚙️",
-                backgroundColor = DarkSlate,
-                onClick = onDeviceClick
-            )
-        }
-    }
-}
-
-@Composable
-fun ActionButton(
-    modifier: Modifier = Modifier,
-    label: String,
-    icon: String,
-    backgroundColor: Color,
-    onClick: () -> Unit
-) {
-    Button(
-        onClick = onClick,
-        modifier = modifier.height(56.dp),
-        shape = RoundedCornerShape(12.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = backgroundColor)
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(text = icon, fontSize = 20.sp)
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
-                color = Color.White
-            )
         }
     }
 }
@@ -553,44 +458,70 @@ fun OccupancyCard(
     available: Int
 ) {
     val percentage = if (total > 0) (occupied.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
+    val isNearCapacity = percentage >= 0.85f
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "Parking Occupancy",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "${(percentage * 100).toInt()}% Full",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = if (percentage > 0.85f) ErrorRed else PrimaryBlue
-                )
+                Column {
+                    Text(
+                        text = "Parking Availability",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(
+                        verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "$available",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isNearCapacity) AmberWarning else SuccessGreen
+                        )
+                        Text(
+                            text = "free spots / $total total",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (isNearCapacity) ErrorRed.copy(alpha = 0.15f) else SuccessGreen.copy(alpha = 0.15f)
+                ) {
+                    Text(
+                        text = "${(percentage * 100).toInt()}% OCCUPIED",
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isNearCapacity) ErrorRed else SuccessGreen
+                    )
+                }
             }
 
             LinearProgressIndicator(
                 progress = { percentage },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(10.dp)
-                    .clip(RoundedCornerShape(5.dp)),
-                color = if (percentage > 0.85f) ErrorRed else PrimaryBlue,
+                    .height(8.dp)
+                    .clip(RoundedCornerShape(4.dp)),
+                color = if (isNearCapacity) ErrorRed else PrimaryBlue,
                 trackColor = MaterialTheme.colorScheme.surfaceVariant
             )
 
@@ -599,13 +530,13 @@ fun OccupancyCard(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "Occupied: $occupied",
-                    style = MaterialTheme.typography.bodySmall,
+                    text = "Occupied: $occupied spots",
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = "Available: $available",
-                    style = MaterialTheme.typography.bodySmall,
+                    text = "Available: $available spots",
+                    style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
                     color = SuccessGreen
                 )
@@ -615,15 +546,188 @@ fun OccupancyCard(
 }
 
 @Composable
+fun ShiftMetricsGrid(
+    parkedCount: Int,
+    todayEntries: Int,
+    todayExits: Int,
+    activeMembersCount: Int
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            MetricTile(
+                modifier = Modifier.weight(1f),
+                title = "Parked Now",
+                value = "$parkedCount",
+                icon = "🚗",
+                color = StatusParked
+            )
+            MetricTile(
+                modifier = Modifier.weight(1f),
+                title = "Today In",
+                value = "$todayEntries",
+                icon = "📥",
+                color = PrimaryBlue
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            MetricTile(
+                modifier = Modifier.weight(1f),
+                title = "Today Out",
+                value = "$todayExits",
+                icon = "📤",
+                color = SuccessGreen
+            )
+            MetricTile(
+                modifier = Modifier.weight(1f),
+                title = "VIP Passes",
+                value = "$activeMembersCount",
+                icon = "👑",
+                color = AmberWarning
+            )
+        }
+    }
+}
+
+@Composable
+fun MetricTile(
+    modifier: Modifier = Modifier,
+    title: String,
+    value: String,
+    icon: String,
+    color: Color
+) {
+    Card(
+        modifier = modifier,
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = color
+                )
+            }
+            Text(text = icon, fontSize = 24.sp)
+        }
+    }
+}
+
+@Composable
+fun ManagementTilesSection(
+    onMembershipClick: () -> Unit,
+    onReportsClick: () -> Unit,
+    onLicenseClick: () -> Unit,
+    onDeviceClick: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(
+            text = "Management & Tools",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            ManagementTile(
+                modifier = Modifier.weight(1f),
+                icon = "👑",
+                label = "VIP Passes",
+                onClick = onMembershipClick
+            )
+            ManagementTile(
+                modifier = Modifier.weight(1f),
+                icon = "📊",
+                label = "Reports",
+                onClick = onReportsClick
+            )
+            ManagementTile(
+                modifier = Modifier.weight(1f),
+                icon = "🔑",
+                label = "License",
+                onClick = onLicenseClick
+            )
+            ManagementTile(
+                modifier = Modifier.weight(1f),
+                icon = "⚙️",
+                label = "Terminal",
+                onClick = onDeviceClick
+            )
+        }
+    }
+}
+
+@Composable
+fun ManagementTile(
+    modifier: Modifier = Modifier,
+    icon: String,
+    label: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = modifier
+            .height(72.dp)
+            .clickable { onClick() },
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = CardDefaults.outlinedCardBorder()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(text = icon, fontSize = 22.sp)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
+}
+
+@Composable
 fun LiveParkedVehicleItem(
     session: ParkingSessionEntity,
     onExitClick: () -> Unit
 ) {
-    val dateFormat = SimpleDateFormat("hh:mm a", Locale.getDefault())
+    val timeFormat = SimpleDateFormat("hh:mm a", Locale.getDefault())
+    val elapsedMinutes = ((System.currentTimeMillis() - session.entryTime) / 60000).coerceAtLeast(0)
+    val elapsedFormatted = if (elapsedMinutes < 60) "${elapsedMinutes}m" else "${elapsedMinutes / 60}h ${elapsedMinutes % 60}m"
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onExitClick() },
+        shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
@@ -638,36 +742,59 @@ fun LiveParkedVehicleItem(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = when (session.vehicleTypeId) {
-                        "MOTORCYCLE" -> "🏍"
-                        "VAN" -> "🚐"
-                        "BUS" -> "🚌"
-                        else -> "🚗"
-                    },
-                    fontSize = 24.sp
-                )
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = PrimaryBlue.copy(alpha = 0.12f),
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = when (session.vehicleTypeId) {
+                                "MOTORCYCLE" -> "🏍"
+                                "VAN" -> "🚐"
+                                "BUS" -> "🚌"
+                                "TRUCK" -> "🚚"
+                                else -> "🚗"
+                            },
+                            fontSize = 22.sp
+                        )
+                    }
+                }
+
                 Column {
                     Text(
                         text = session.vehicleNumber,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
                     )
-                    Text(
-                        text = "Entered: ${dateFormat.format(Date(session.entryTime))} • ${session.ticketNumber}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "In: ${timeFormat.format(Date(session.entryTime))}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(text = "•", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            text = elapsedFormatted,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = PrimaryBlue
+                        )
+                    }
                 }
             }
 
             Button(
                 onClick = onExitClick,
-                shape = RoundedCornerShape(8.dp),
+                shape = RoundedCornerShape(10.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
             ) {
-                Text("Exit", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text("EXIT & BILL", fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
         }
     }

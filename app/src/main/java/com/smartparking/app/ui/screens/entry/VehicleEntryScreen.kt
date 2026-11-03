@@ -1,23 +1,30 @@
 package com.smartparking.app.ui.screens.entry
 
 import android.widget.Toast
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -29,6 +36,7 @@ import com.smartparking.app.data.local.entity.ParkingSessionEntity
 import com.smartparking.app.domain.settings.PosSettingsRepository
 import com.smartparking.app.ui.theme.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -68,7 +76,24 @@ fun VehicleEntryScreen(
     var customerPhone by remember { mutableStateOf("") }
     var isPrinting by remember { mutableStateOf(false) }
 
+    // Toggle between Numeric Keypad (default) and Full Character Keyboard
+    var isNumericKeyboard by remember { mutableStateOf(true) }
+
     var matchedMember by remember { mutableStateOf<MembershipEntity?>(null) }
+
+    // Auto-focus and auto-show keyboard
+    val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    LaunchedEffect(Unit) {
+        delay(250) // Small delay to guarantee Compose layout pass completes
+        try {
+            focusRequester.requestFocus()
+            keyboardController?.show()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
 
     // Ensure selected vehicle type is valid among enabled ones
     LaunchedEffect(activeVehicleTypes) {
@@ -80,7 +105,7 @@ fun VehicleEntryScreen(
     // Real-time lookup for active membership whenever plate number is entered
     LaunchedEffect(plateNumber) {
         val cleanPlate = plateNumber.trim().uppercase(Locale.US)
-        if (cleanPlate.length >= 4) {
+        if (cleanPlate.length >= 3) {
             withContext(Dispatchers.IO) {
                 val member = database.membershipDao().getActiveMembershipForVehicle(cleanPlate)
                 withContext(Dispatchers.Main) {
@@ -98,10 +123,53 @@ fun VehicleEntryScreen(
         }
     }
 
+    fun submitEntry() {
+        if (plateNumber.isNotBlank() && !isPrinting) {
+            isPrinting = true
+            val cleanPlate = plateNumber.trim().uppercase(Locale.US)
+            val nowEpoch = System.currentTimeMillis()
+            val ticketNo = "SP-" + SimpleDateFormat("yyyyMMdd", Locale.US).format(Date(nowEpoch)) + "-" + (1000..9999).random()
+
+            coroutineScope.launch {
+                withContext(Dispatchers.IO) {
+                    val session = ParkingSessionEntity(
+                        id = UUID.randomUUID().toString(),
+                        ticketNumber = ticketNo,
+                        siteId = "site_default_01",
+                        vehicleNumber = cleanPlate,
+                        vehicleTypeId = selectedVehicleType,
+                        customerPhone = customerPhone.ifBlank { null },
+                        entryTime = nowEpoch,
+                        status = "PARKED",
+                        notes = matchedMember?.let { "Member Pass: ${it.memberNumber} (${it.fullName})" }
+                    )
+                    database.parkingSessionDao().insertSession(session)
+                }
+
+                onGenerateTicket(cleanPlate, selectedVehicleType, selectedZone, customerPhone)
+
+                withContext(Dispatchers.Main) {
+                    isPrinting = false
+                    Toast.makeText(context, "Entry Recorded: $ticketNo", Toast.LENGTH_SHORT).show()
+                    navController.popBackStack()
+                }
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Vehicle Entry", fontWeight = FontWeight.Bold) },
+                title = {
+                    Column {
+                        Text("Vehicle Entry", fontWeight = FontWeight.Bold)
+                        Text(
+                            "Type plate & generate entry ticket",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Back")
@@ -121,35 +189,102 @@ fun VehicleEntryScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Spacer(modifier = Modifier.height(2.dp))
+            Spacer(modifier = Modifier.height(4.dp))
 
-            // 1. Plate Number Input
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "Vehicle License Plate *",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-
-                OutlinedTextField(
-                    value = plateNumber,
-                    onValueChange = { plateNumber = it.uppercase() },
+            // 1. Vehicle License Plate (Auto Numeric Keypad + Quick ABC Toggle)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            ) {
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(64.dp),
-                    placeholder = { Text("e.g. BA 12 PA 1234") },
-                    textStyle = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    keyboardOptions = KeyboardOptions(
-                        capitalization = KeyboardCapitalization.Characters,
-                        keyboardType = KeyboardType.Text
-                    ),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = PrimaryBlue,
-                        unfocusedBorderColor = BorderLight
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Vehicle License Plate *",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        // Mode Switcher: [ 123 Numeric ] vs [ ABC Text ]
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = PrimaryBlue.copy(alpha = 0.12f),
+                            modifier = Modifier.clickable {
+                                isNumericKeyboard = !isNumericKeyboard
+                                keyboardController?.show()
+                            }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = if (isNumericKeyboard) "🔢 123 (NUMERIC)" else "🔤 ABC (TEXT)",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = PrimaryBlue
+                                )
+                                Text(
+                                    text = "Tap to switch",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = plateNumber,
+                        onValueChange = { plateNumber = it.uppercase() },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(focusRequester),
+                        placeholder = { Text("e.g. 1234 or BA 12 PA 1234") },
+                        label = { Text("Plate Number") },
+                        textStyle = MaterialTheme.typography.headlineSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.5.sp
+                        ),
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        leadingIcon = {
+                            Icon(Icons.Default.DirectionsCar, contentDescription = null, tint = PrimaryBlue)
+                        },
+                        trailingIcon = {
+                            if (plateNumber.isNotEmpty()) {
+                                IconButton(onClick = { plateNumber = "" }) {
+                                    Icon(Icons.Default.Clear, contentDescription = "Clear", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        },
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.Characters,
+                            keyboardType = if (isNumericKeyboard) KeyboardType.Number else KeyboardType.Text,
+                            imeAction = ImeAction.Done
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onDone = {
+                                keyboardController?.hide()
+                                submitEntry()
+                            }
+                        ),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = PrimaryBlue,
+                            unfocusedBorderColor = BorderLight
+                        )
                     )
-                )
+                }
             }
 
             // 2. VIP Membership Found Banner
@@ -214,12 +349,12 @@ fun VehicleEntryScreen(
                 }
             }
 
-            // 3. Vehicle Type Selector (Large Cards)
+            // 3. Vehicle Type Selector
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "Vehicle Type",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
                 )
 
                 val chunkedVehicles = remember(activeVehicleTypes) {
@@ -244,90 +379,72 @@ fun VehicleEntryScreen(
                 }
             }
 
-            // 4. Zone Picker
+            // 4. Parking Zone Picker
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "Parking Zone",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
                 )
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     zones.forEach { zone ->
                         ZoneChip(
                             label = zone,
                             isSelected = selectedZone == zone,
-                            onSelect = { selectedZone = zone }
+                            onSelect = { selectedZone = zone },
+                            modifier = Modifier.weight(1f)
                         )
                     }
                 }
             }
 
-            // 5. Optional Customer Phone
+            // 5. Customer Phone (Optional) - Perfectly aligned
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "Customer Phone (Optional)",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
                 )
 
                 OutlinedTextField(
                     value = customerPhone,
                     onValueChange = { customerPhone = it },
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("98XXXXXXXX") },
+                    placeholder = { Text("e.g. 98XXXXXXXX") },
+                    label = { Text("Mobile Number") },
+                    leadingIcon = {
+                        Icon(Icons.Default.Phone, contentDescription = null, tint = PrimaryBlue)
+                    },
+                    trailingIcon = {
+                        if (customerPhone.isNotEmpty()) {
+                            IconButton(onClick = { customerPhone = "" }) {
+                                Icon(Icons.Default.Clear, contentDescription = "Clear", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    },
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = PrimaryBlue,
+                        unfocusedBorderColor = BorderLight
+                    )
                 )
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
-            // 6. Generate & Auto Print Button (Properly positioned without weight crash)
+            // 6. Generate & Auto Print Button
             Button(
-                onClick = {
-                    if (plateNumber.isNotBlank()) {
-                        isPrinting = true
-                        val cleanPlate = plateNumber.trim().uppercase(Locale.US)
-                        val nowEpoch = System.currentTimeMillis()
-                        val ticketNo = "SP-" + SimpleDateFormat("yyyyMMdd", Locale.US).format(Date(nowEpoch)) + "-" + (1000..9999).random()
-
-                        coroutineScope.launch {
-                            // Save real session in database
-                            withContext(Dispatchers.IO) {
-                                val session = ParkingSessionEntity(
-                                    id = UUID.randomUUID().toString(),
-                                    ticketNumber = ticketNo,
-                                    siteId = "site_default_01",
-                                    vehicleNumber = cleanPlate,
-                                    vehicleTypeId = selectedVehicleType,
-                                    customerPhone = customerPhone.ifBlank { null },
-                                    entryTime = nowEpoch,
-                                    status = "PARKED",
-                                    notes = matchedMember?.let { "Member Pass: ${it.memberNumber} (${it.fullName})" }
-                                )
-                                database.parkingSessionDao().insertSession(session)
-                            }
-
-                            // Trigger print
-                            onGenerateTicket(cleanPlate, selectedVehicleType, selectedZone, customerPhone)
-
-                            withContext(Dispatchers.Main) {
-                                isPrinting = false
-                                Toast.makeText(context, "Entry Recorded: $ticketNo", Toast.LENGTH_SHORT).show()
-                                navController.popBackStack()
-                            }
-                        }
-                    }
-                },
+                onClick = { submitEntry() },
                 enabled = plateNumber.isNotBlank() && !isPrinting,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(60.dp),
+                    .height(58.dp),
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
             ) {
@@ -341,8 +458,8 @@ fun VehicleEntryScreen(
                         Text(text = "🖨️", fontSize = 22.sp)
                         Text(
                             text = if (matchedMember != null) "PRINT VIP PASS ENTRY" else "GENERATE & PRINT TICKET",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontSize = 16.sp
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }
@@ -362,7 +479,7 @@ fun VehicleTypeCard(
 ) {
     Card(
         modifier = modifier
-            .height(88.dp)
+            .height(86.dp)
             .clickable { onSelect() },
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
@@ -382,7 +499,7 @@ fun VehicleTypeCard(
             Text(
                 text = type.label,
                 style = MaterialTheme.typography.labelMedium,
-                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
                 color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
             )
         }
@@ -393,21 +510,28 @@ fun VehicleTypeCard(
 fun ZoneChip(
     label: String,
     isSelected: Boolean,
-    onSelect: () -> Unit
+    onSelect: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Surface(
-        modifier = Modifier.clickable { onSelect() },
-        shape = RoundedCornerShape(20.dp),
+        modifier = modifier
+            .clickable { onSelect() },
+        shape = RoundedCornerShape(12.dp),
         color = if (isSelected) PrimaryBlue.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
         border = if (isSelected) ButtonDefaults.outlinedButtonBorder else null
     ) {
-        Text(
-            text = label,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-            color = if (isSelected) PrimaryBlue else MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Box(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 12.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = label.replace(" - ", "\n"),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                color = if (isSelected) PrimaryBlue else MaterialTheme.colorScheme.onSurfaceVariant,
+                lineHeight = 16.sp
+            )
+        }
     }
 }
 
@@ -425,7 +549,7 @@ val vehicleTypes = listOf(
 )
 
 val zones = listOf(
-    "Ground Floor - A",
-    "Basement 1 - B",
-    "Outdoor VIP"
+    "Ground - A",
+    "Basement - B",
+    "VIP Zone"
 )

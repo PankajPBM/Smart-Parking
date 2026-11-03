@@ -1,5 +1,8 @@
 package com.smartparking.app
 
+import android.content.Context
+import android.content.IntentFilter
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -9,13 +12,18 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.smartparking.app.hardware.capability.AppMetadata
 import com.smartparking.app.hardware.capability.DeviceCapabilities
 import com.smartparking.app.hardware.printer.UniversalHardwareService
+import com.smartparking.app.hardware.sunmi.SunmiScannerManager
+import com.smartparking.app.hardware.sunmi.SunmiScannerReceiver
 import com.smartparking.app.license.PbLicenseService
 import com.smartparking.app.ui.screens.dashboard.DashboardScreen
 import com.smartparking.app.ui.screens.entry.VehicleEntryScreen
@@ -38,6 +46,9 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var hardwareService: UniversalHardwareService
     private lateinit var licenseService: PbLicenseService
+    private lateinit var scannerManager: SunmiScannerManager
+    private val scannerReceiver = SunmiScannerReceiver()
+    private var isScannerRegistered = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,6 +59,13 @@ class MainActivity : ComponentActivity() {
         hardwareService = UniversalHardwareService.getInstance(this)
         hardwareService.bind(this)
         licenseService = PbLicenseService.getInstance(this)
+        scannerManager = SunmiScannerManager(this)
+
+        // Ensure scanner sounds & feedback are active on SUNMI terminal
+        scannerManager.configureScannerSettings(enableBeep = true, enableVibrate = true, enableLight = true)
+
+        // Register dynamic broadcast receiver for hardware scanner
+        registerScannerReceiver()
 
         // Asynchronously check heartbeat, sync with cloud, and verify terminal version
         lifecycleScope.launch(Dispatchers.IO) {
@@ -139,6 +157,39 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun registerScannerReceiver() {
+        if (!isScannerRegistered) {
+            try {
+                val filter = IntentFilter().apply {
+                    addAction(SunmiScannerReceiver.ACTION_DATA_CODE_RECEIVED)
+                    addAction(SunmiScannerReceiver.ACTION_SUNMI_SCAN_RESULT)
+                    addAction(SunmiScannerReceiver.ACTION_GENERIC_SCAN_RESULT)
+                    addAction(SunmiScannerReceiver.ACTION_SUNMI_ALT)
+                }
+                ContextCompat.registerReceiver(
+                    this,
+                    scannerReceiver,
+                    filter,
+                    ContextCompat.RECEIVER_EXPORTED
+                )
+                isScannerRegistered = true
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    private fun unregisterScannerReceiver() {
+        if (isScannerRegistered) {
+            try {
+                unregisterReceiver(scannerReceiver)
+                isScannerRegistered = false
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         // Re-verify integrity on resume (detects debugger attachment or Frida hooks injected during pause)
@@ -146,6 +197,12 @@ class MainActivity : ComponentActivity() {
         if (::hardwareService.isInitialized) {
             hardwareService.bind(this)
         }
+        registerScannerReceiver()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        unregisterScannerReceiver()
     }
 }
 
@@ -178,6 +235,23 @@ fun SmartParkingAppNavigation(
         composable("exit") {
             VehicleExitScreen(
                 navController = navController,
+                initialTicketNumber = "",
+                onProcessExit = onProcessExit
+            )
+        }
+        composable(
+            route = "exit?ticketNo={ticketNo}",
+            arguments = listOf(
+                navArgument("ticketNo") {
+                    type = NavType.StringType
+                    defaultValue = ""
+                }
+            )
+        ) { backStackEntry ->
+            val ticketNo = backStackEntry.arguments?.getString("ticketNo") ?: ""
+            VehicleExitScreen(
+                navController = navController,
+                initialTicketNumber = ticketNo,
                 onProcessExit = onProcessExit
             )
         }

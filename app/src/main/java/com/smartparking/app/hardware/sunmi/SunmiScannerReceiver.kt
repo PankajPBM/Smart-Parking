@@ -3,6 +3,7 @@ package com.smartparking.app.hardware.sunmi
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.util.Log
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -10,19 +11,32 @@ import kotlinx.coroutines.flow.asSharedFlow
 /**
  * BroadcastReceiver for handling SUNMI hardware scanner barcode/QR code scan events.
  *
- * SUNMI scanner broadcasts data via Intent when a barcode/QR is scanned.
- * This receiver captures the scan event and exposes it as a Flow for reactive consumption.
+ * Supports SUNMI V2, V2 Pro, V2s, V3, V3 Mix, L2, and all SUNMI OS versions (Android 7.1 through 13+).
+ * Captures broadcast intents from both internal 2D laser scan engines and camera barcode decoders.
  */
 class SunmiScannerReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context?, intent: Intent?) {
-        if (intent?.action == ACTION_DATA_CODE_RECEIVED) {
-            val scanData = intent.getStringExtra(DATA) ?: ""
-            val source = intent.getStringExtra(SOURCE) ?: "unknown"
+        val action = intent?.action ?: return
+        Log.d(TAG, "Scanner broadcast received: action=$action")
 
-            if (scanData.isNotEmpty()) {
-                // Emit scan result to Flow subscribers
-                emitScan(ScanResult(scanData, source))
+        if (action in SUPPORTED_ACTIONS) {
+            // Extract barcode data across all known SUNMI firmware intent extra keys
+            val scanData = intent.getStringExtra(EXTRA_DATA)
+                ?: intent.getStringExtra(EXTRA_DATA_STRING)
+                ?: intent.getStringExtra(EXTRA_BARCODE_DATA)
+                ?: intent.getStringExtra(EXTRA_BARCODE)
+                ?: intent.getStringExtra(EXTRA_VALUE)
+                ?: intent.getStringExtra(EXTRA_SCANNER_DATA)
+                ?: intent.getByteArrayExtra(EXTRA_DATA)?.let { String(it).trim() }
+                ?: ""
+
+            val source = intent.getStringExtra(EXTRA_SOURCE) ?: "scanner"
+
+            if (scanData.isNotBlank()) {
+                val cleanData = scanData.trim()
+                Log.i(TAG, "Scanned code received: '$cleanData' (source: $source)")
+                emitScan(ScanResult(cleanData, source))
             }
         }
     }
@@ -34,21 +48,34 @@ class SunmiScannerReceiver : BroadcastReceiver() {
     )
 
     companion object {
-        // SUNMI Scanner Intent Actions and Extras
-        const val ACTION_DATA_CODE_RECEIVED = "com.sunmi.scanner.ACTION_DATA_CODE_RECEIVED"
-        const val DATA = "data"
-        const val SOURCE = "source"
+        private const val TAG = "SunmiScannerReceiver"
 
-        private val _scanFlow = MutableSharedFlow<ScanResult>(extraBufferCapacity = 10)
+        // SUNMI Scanner Intent Actions
+        const val ACTION_DATA_CODE_RECEIVED = "com.sunmi.scanner.ACTION_DATA_CODE_RECEIVED"
+        const val ACTION_SUNMI_SCAN_RESULT = "com.sunmi.action.SCAN_RESULT"
+        const val ACTION_GENERIC_SCAN_RESULT = "android.intent.action.SCANRESULT"
+        const val ACTION_SUNMI_ALT = "com.sunmi.scan.ACTION_DATA_CODE_RECEIVED"
+
+        val SUPPORTED_ACTIONS = setOf(
+            ACTION_DATA_CODE_RECEIVED,
+            ACTION_SUNMI_SCAN_RESULT,
+            ACTION_GENERIC_SCAN_RESULT,
+            ACTION_SUNMI_ALT
+        )
+
+        // Extra Keys
+        const val EXTRA_DATA = "data"
+        const val EXTRA_DATA_STRING = "data_string"
+        const val EXTRA_BARCODE_DATA = "barcode_data"
+        const val EXTRA_BARCODE = "barcode"
+        const val EXTRA_VALUE = "value"
+        const val EXTRA_SCANNER_DATA = "scannerdata"
+        const val EXTRA_SOURCE = "source"
+
+        private val _scanFlow = MutableSharedFlow<ScanResult>(extraBufferCapacity = 20)
         val scanFlow: SharedFlow<ScanResult> = _scanFlow.asSharedFlow()
 
-        private var instance: SunmiScannerReceiver? = null
-
-        init {
-            instance = SunmiScannerReceiver()
-        }
-
-        private fun emitScan(result: ScanResult) {
+        fun emitScan(result: ScanResult) {
             _scanFlow.tryEmit(result)
         }
     }
@@ -56,7 +83,7 @@ class SunmiScannerReceiver : BroadcastReceiver() {
 
 /**
  * Manager for SUNMI Hardware Scanner Control.
- * Provides programmatic trigger/stop commands for handheld scanner devices.
+ * Provides programmatic trigger/stop commands and feedback configuration for handheld devices.
  */
 class SunmiScannerManager(private val context: Context) {
 
@@ -65,8 +92,13 @@ class SunmiScannerManager(private val context: Context) {
      */
     fun triggerScan() {
         try {
-            val intent = Intent("com.sunmi.scanner.ACTION_SCAN")
-            context.sendBroadcast(intent)
+            // Send primary SUNMI scanner trigger broadcast
+            val intent1 = Intent("com.sunmi.scanner.ACTION_SCAN")
+            context.sendBroadcast(intent1)
+
+            // Send secondary trigger for alternate SUNMI firmware builds
+            val intent2 = Intent("com.sunmi.action.START_SCAN")
+            context.sendBroadcast(intent2)
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -77,8 +109,11 @@ class SunmiScannerManager(private val context: Context) {
      */
     fun stopScan() {
         try {
-            val intent = Intent("com.sunmi.scanner.ACTION_STOP_SCAN")
-            context.sendBroadcast(intent)
+            val intent1 = Intent("com.sunmi.scanner.ACTION_STOP_SCAN")
+            context.sendBroadcast(intent1)
+
+            val intent2 = Intent("com.sunmi.action.STOP_SCAN")
+            context.sendBroadcast(intent2)
         } catch (e: Exception) {
             e.printStackTrace()
         }
