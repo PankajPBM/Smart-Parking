@@ -3,7 +3,6 @@
 package com.smartparking.app.ui.screens.dashboard
 
 import android.widget.Toast
-import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -12,14 +11,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -69,7 +66,6 @@ fun DashboardScreen(
     val todayEntries by database.parkingSessionDao().getTodayEntriesCountFlow(startOfDay).collectAsState(initial = 0)
     val todayExits by database.parkingSessionDao().getTodayExitsCountFlow(startOfDay).collectAsState(initial = 0)
     val liveParkedSessions by database.parkingSessionDao().getParkedSessionsFlow().collectAsState(initial = emptyList())
-    val activeMembersCount by database.membershipDao().getActiveMembersCountFlow().collectAsState(initial = 0)
 
     val totalCapacity = 200
     val availableSpots = (totalCapacity - parkedCount).coerceAtLeast(0)
@@ -99,6 +95,8 @@ fun DashboardScreen(
                 licenseState = licenseState,
                 isSyncing = isSyncing,
                 onLicenseClick = { navController.navigate("license") },
+                onMembershipClick = { navController.navigate("membership") },
+                onReportsClick = { navController.navigate("reports") },
                 onInfoClick = { navController.navigate("device_info") },
                 onSyncClick = {
                     if (!isSyncing) {
@@ -125,7 +123,7 @@ fun DashboardScreen(
         ) {
             item { Spacer(modifier = Modifier.height(4.dp)) }
 
-            // 1. HERO OPERATIONAL ACTIONS (Vehicle Entry & Exit)
+            // 1. PRIMARY OPERATIONAL ACTIONS (Vehicle Entry & Exit)
             item {
                 HeroActionsSection(
                     onEntryClick = { navController.navigate("entry") },
@@ -142,27 +140,16 @@ fun DashboardScreen(
                 )
             }
 
-            // 3. TODAY'S SHIFT METRICS (4 Clean Cards)
+            // 3. TODAY'S SHIFT METRICS (3 Non-duplicate clean summary cards)
             item {
-                ShiftMetricsGrid(
+                ShiftMetricsRow(
                     parkedCount = parkedCount,
                     todayEntries = todayEntries,
-                    todayExits = todayExits,
-                    activeMembersCount = activeMembersCount
+                    todayExits = todayExits
                 )
             }
 
-            // 4. MANAGEMENT & TOOLS TILES (VIP Passes, Reports, License, Terminal)
-            item {
-                ManagementTilesSection(
-                    onMembershipClick = { navController.navigate("membership") },
-                    onReportsClick = { navController.navigate("reports") },
-                    onLicenseClick = { navController.navigate("license") },
-                    onDeviceClick = { navController.navigate("device_info") }
-                )
-            }
-
-            // 5. CURRENTLY PARKED VEHICLES HEADER
+            // 4. CURRENTLY PARKED VEHICLES HEADER
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -188,7 +175,7 @@ fun DashboardScreen(
                 }
             }
 
-            // 6. PARKED VEHICLES LIST
+            // 5. PARKED VEHICLES LIST
             if (liveParkedSessions.isEmpty()) {
                 item {
                     Surface(
@@ -239,18 +226,12 @@ fun DashboardTopBar(
     licenseState: PbLicenseService.LicenseState,
     isSyncing: Boolean,
     onLicenseClick: () -> Unit,
+    onMembershipClick: () -> Unit,
+    onReportsClick: () -> Unit,
     onInfoClick: () -> Unit,
     onSyncClick: () -> Unit
 ) {
-    val rotation by rememberInfiniteTransition(label = "sync").animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "sync_rotation"
-    )
+    var menuExpanded by remember { mutableStateOf(false) }
 
     TopAppBar(
         title = {
@@ -278,16 +259,6 @@ fun DashboardTopBar(
             }
         },
         actions = {
-            // Cloud Sync Icon with rotation animation when active
-            IconButton(onClick = onSyncClick) {
-                Icon(
-                    imageVector = Icons.Default.Sync,
-                    contentDescription = "Sync",
-                    modifier = Modifier.then(if (isSyncing) Modifier.rotate(rotation) else Modifier),
-                    tint = PrimaryBlue
-                )
-            }
-
             // License Status Pill
             Surface(
                 modifier = Modifier
@@ -307,7 +278,7 @@ fun DashboardTopBar(
                     Text(
                         text = when (licenseState) {
                             is PbLicenseService.LicenseState.ProActive -> "👑 PRO"
-                            is PbLicenseService.LicenseState.TrialActive -> "⏳ ${(licenseState as PbLicenseService.LicenseState.TrialActive).daysRemaining}d Trial"
+                            is PbLicenseService.LicenseState.TrialActive -> "⏳ ${(licenseState as? PbLicenseService.LicenseState.TrialActive)?.daysRemaining ?: 7}d Trial"
                             is PbLicenseService.LicenseState.Expired -> "🔴 Expired"
                         },
                         style = MaterialTheme.typography.labelSmall,
@@ -321,13 +292,73 @@ fun DashboardTopBar(
                 }
             }
 
-            // Info icon
-            IconButton(onClick = onInfoClick) {
-                Icon(
-                    imageVector = Icons.Default.Info,
-                    contentDescription = "Device Info",
-                    tint = PrimaryBlue
-                )
+            // All Secondary Features Arranged Under Single Menu Icon (No Dashboard Clutter or Duplication)
+            Box {
+                IconButton(onClick = { menuExpanded = true }) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "Menu",
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false },
+                    modifier = Modifier.width(230.dp)
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("VIP Memberships", fontWeight = FontWeight.SemiBold) },
+                        leadingIcon = { Text("👑", fontSize = 18.sp) },
+                        onClick = {
+                            menuExpanded = false
+                            onMembershipClick()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Reports & History", fontWeight = FontWeight.SemiBold) },
+                        leadingIcon = { Text("📊", fontSize = 18.sp) },
+                        onClick = {
+                            menuExpanded = false
+                            onReportsClick()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("PB License & Trial", fontWeight = FontWeight.SemiBold) },
+                        leadingIcon = { Text("🔑", fontSize = 18.sp) },
+                        onClick = {
+                            menuExpanded = false
+                            onLicenseClick()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Terminal Diagnostics", fontWeight = FontWeight.SemiBold) },
+                        leadingIcon = { Text("⚙️", fontSize = 18.sp) },
+                        onClick = {
+                            menuExpanded = false
+                            onInfoClick()
+                        }
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    DropdownMenuItem(
+                        text = {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text("Sync with Cloud", fontWeight = FontWeight.SemiBold)
+                                if (isSyncing) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                }
+                            }
+                        },
+                        leadingIcon = { Text("🔄", fontSize = 18.sp) },
+                        onClick = {
+                            menuExpanded = false
+                            onSyncClick()
+                        }
+                    )
+                }
             }
         },
         colors = TopAppBarDefaults.topAppBarColors(
@@ -546,57 +577,41 @@ fun OccupancyCard(
 }
 
 @Composable
-fun ShiftMetricsGrid(
+fun ShiftMetricsRow(
     parkedCount: Int,
     todayEntries: Int,
-    todayExits: Int,
-    activeMembersCount: Int
+    todayExits: Int
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            MetricTile(
-                modifier = Modifier.weight(1f),
-                title = "Parked Now",
-                value = "$parkedCount",
-                icon = "🚗",
-                color = StatusParked
-            )
-            MetricTile(
-                modifier = Modifier.weight(1f),
-                title = "Today In",
-                value = "$todayEntries",
-                icon = "📥",
-                color = PrimaryBlue
-            )
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            MetricTile(
-                modifier = Modifier.weight(1f),
-                title = "Today Out",
-                value = "$todayExits",
-                icon = "📤",
-                color = SuccessGreen
-            )
-            MetricTile(
-                modifier = Modifier.weight(1f),
-                title = "VIP Passes",
-                value = "$activeMembersCount",
-                icon = "👑",
-                color = AmberWarning
-            )
-        }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        ShiftMetricTile(
+            modifier = Modifier.weight(1f),
+            title = "Parked Now",
+            value = "$parkedCount",
+            icon = "🚗",
+            color = StatusParked
+        )
+        ShiftMetricTile(
+            modifier = Modifier.weight(1f),
+            title = "Today In",
+            value = "$todayEntries",
+            icon = "📥",
+            color = PrimaryBlue
+        )
+        ShiftMetricTile(
+            modifier = Modifier.weight(1f),
+            title = "Today Out",
+            value = "$todayExits",
+            icon = "📤",
+            color = SuccessGreen
+        )
     }
 }
 
 @Composable
-fun MetricTile(
+fun ShiftMetricTile(
     modifier: Modifier = Modifier,
     title: String,
     value: String,
@@ -609,106 +624,29 @@ fun MetricTile(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            Column {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
                     text = title,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Text(
-                    text = value,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = color
-                )
+                Text(text = icon, fontSize = 16.sp)
             }
-            Text(text = icon, fontSize = 24.sp)
-        }
-    }
-}
-
-@Composable
-fun ManagementTilesSection(
-    onMembershipClick: () -> Unit,
-    onReportsClick: () -> Unit,
-    onLicenseClick: () -> Unit,
-    onDeviceClick: () -> Unit
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(
-            text = "Management & Tools",
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold
-        )
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            ManagementTile(
-                modifier = Modifier.weight(1f),
-                icon = "👑",
-                label = "VIP Passes",
-                onClick = onMembershipClick
-            )
-            ManagementTile(
-                modifier = Modifier.weight(1f),
-                icon = "📊",
-                label = "Reports",
-                onClick = onReportsClick
-            )
-            ManagementTile(
-                modifier = Modifier.weight(1f),
-                icon = "🔑",
-                label = "License",
-                onClick = onLicenseClick
-            )
-            ManagementTile(
-                modifier = Modifier.weight(1f),
-                icon = "⚙️",
-                label = "Terminal",
-                onClick = onDeviceClick
-            )
-        }
-    }
-}
-
-@Composable
-fun ManagementTile(
-    modifier: Modifier = Modifier,
-    icon: String,
-    label: String,
-    onClick: () -> Unit
-) {
-    Surface(
-        modifier = modifier
-            .height(72.dp)
-            .clickable { onClick() },
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = CardDefaults.outlinedCardBorder()
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text(text = icon, fontSize = 22.sp)
-            Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface
+                text = value,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = color
             )
         }
     }
