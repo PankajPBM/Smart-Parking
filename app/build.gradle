@@ -21,9 +21,22 @@ android {
         }
     }
 
+    signingConfigs {
+        release {
+            storeFile file("../keystore/pb_smartparking_release.jks")
+            storePassword "PBTech@Parking2026"
+            keyAlias "pb_smartparking"
+            keyPassword "PBTech@Parking2026"
+            v1SigningEnabled true
+            v2SigningEnabled true
+        }
+    }
+
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
+            signingConfig signingConfigs.release
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         debug {

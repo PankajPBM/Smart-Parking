@@ -39,6 +39,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // 0. Anti-Tamper & Security Audit (Verifies authentic PB certificate, detects hooks/debuggers)
+        com.smartparking.app.security.SecurityGuard.verifyAppIntegrity(this, enforceHardExit = true)
+
         hardwareService = UniversalHardwareService.getInstance(this)
         licenseService = PbLicenseService.getInstance(this)
 

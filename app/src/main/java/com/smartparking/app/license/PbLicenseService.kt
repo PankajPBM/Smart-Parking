@@ -45,6 +45,7 @@ class PbLicenseService(private val context: Context) {
         private const val PREF_PRODUCT_NAME = "activated_product_name"
         private const val PREF_LICENSE_ENVELOPE = "activated_license_envelope"
         private const val PREF_LAST_HEARTBEAT = "last_heartbeat_time"
+        private const val PREF_LICENSE_HMAC = "activated_license_seal_hmac"
 
         @Volatile
         private var INSTANCE: PbLicenseService? = null
@@ -120,6 +121,19 @@ class PbLicenseService(private val context: Context) {
             val notes = prefs.getString(PREF_NOTES, "") ?: ""
             val prodName = prefs.getString(PREF_PRODUCT_NAME, PRODUCT_NAME) ?: PRODUCT_NAME
             val expiryUtc = prefs.getString(PREF_EXPIRY_UTC, null)
+
+            // Cryptographic Vault Seal Verification (Anti-Tamper)
+            val storedHmac = prefs.getString(PREF_LICENSE_HMAC, null)
+            val expectedHmac = com.smartparking.app.security.SecurityGuard.computeLicenseHmac(key, boundHw, expiryUtc ?: "LIFETIME")
+            if (storedHmac == null || storedHmac != expectedHmac) {
+                return LicenseState.Expired(
+                    reason = "Security integrity violation: Tampered license credentials detected",
+                    expiryDate = "Revoked",
+                    customerName = customer,
+                    boundHardware = boundHw,
+                    productName = prodName
+                )
+            }
 
             var daysRemaining: Int? = null
             // Check if pro license has expired
@@ -240,6 +254,9 @@ class PbLicenseService(private val context: Context) {
                 val productName = json.optString("productName", PRODUCT_NAME)
                 val expiryUtc = json.optString("expiryUtc", "").takeIf { it != "null" && it.isNotBlank() }
                 val licenseEnvelope = json.optString("licenseFileContent", "")
+                val sealHmac = com.smartparking.app.security.SecurityGuard.computeLicenseHmac(
+                    cleanKey, boundHardware, expiryUtc ?: "LIFETIME"
+                )
 
                 prefs.edit()
                     .putBoolean(PREF_IS_ACTIVATED, true)
@@ -255,6 +272,7 @@ class PbLicenseService(private val context: Context) {
                     .putString(PREF_NOTES, notes)
                     .putString(PREF_PRODUCT_NAME, productName)
                     .putString(PREF_LICENSE_ENVELOPE, licenseEnvelope)
+                    .putString(PREF_LICENSE_HMAC, sealHmac)
                     .putLong(PREF_LAST_HEARTBEAT, System.currentTimeMillis())
                     .apply()
 
@@ -330,6 +348,12 @@ class PbLicenseService(private val context: Context) {
                     if (json.has("status")) editor.putString(PREF_STATUS, json.optString("status"))
                     if (json.has("notes")) editor.putString(PREF_NOTES, json.optString("notes"))
                     if (json.has("productName")) editor.putString(PREF_PRODUCT_NAME, json.optString("productName"))
+
+                    val updatedExpiry = if (json.has("expiryUtc")) json.optString("expiryUtc") else prefs.getString(PREF_EXPIRY_UTC, null) ?: "LIFETIME"
+                    val updatedHw = if (json.has("boundHardware")) json.optString("boundHardware") else prefs.getString(PREF_BOUND_HARDWARE, machineHash) ?: machineHash
+                    val sealHmac = com.smartparking.app.security.SecurityGuard.computeLicenseHmac(key, updatedHw, updatedExpiry)
+                    editor.putString(PREF_LICENSE_HMAC, sealHmac)
+
                     editor.apply()
                 }
                 valid
