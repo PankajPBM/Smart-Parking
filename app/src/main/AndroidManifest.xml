@@ -25,6 +25,15 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- Android 11+ (API 30+) Package Visibility for SUNMI Printer & Scanner Services -->
+    <queries>
+        <package android:name="woyou.aidlservice.jiuiv5" />
+        <intent>
+            <action android:name="woyou.aidlservice.jiuiv5.IWoyouService" />
+        </intent>
+        <package android:name="com.sunmi.scanner" />
+    </queries>
+
     <application
         android:name=".SmartParkingApplication"
         android:allowBackup="true"

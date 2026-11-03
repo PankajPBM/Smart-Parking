@@ -13,7 +13,10 @@
     public static int i(...);
 }
 
-# SUNMI AIDL Services (Required for hardware printer communication)
+# SUNMI Official SDK & AIDL Services (Required for hardware printer communication)
+-keep class com.sunmi.** { *; }
+-keep interface com.sunmi.** { *; }
+-dontwarn com.sunmi.**
 -keep class woyou.aidlservice.jiuiv5.** { *; }
 -keep interface woyou.aidlservice.jiuiv5.** { *; }
 
